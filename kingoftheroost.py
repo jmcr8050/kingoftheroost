@@ -166,32 +166,45 @@ def init_game():
     
     st.session_state.history = pd.DataFrame(columns=["Season", "Price", "PlayerCash", "TycoonCash"])
 
-# --- POPUP DIALOG ---
-@st.dialog("📋 Quarterly Report")
+# --- POPUP DIALOG (Updated with Bankruptcy Logic) ---
+@st.dialog("Quarterly Report", width="large")
 def show_season_summary_dialog():
     player = st.session_state.player
     log = player.last_turn_log
     
-    st.markdown(f"### Season {st.session_state.season - 1} Results")
+    # 1. Financials Header
+    st.subheader(f"Season {st.session_state.season - 1} Results")
     
+    # Cash Movement Calculation
+    start_cash = player.cash - log['Profit']
+    
+    # Metrics Row
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Start Cash", f"${start_cash:,.0f}")
+    c2.metric("End Cash", f"${player.cash:,.0f}", delta=f"${log['Profit']:,.0f}")
+    c3.metric("Clearing Price", f"${log['Price']:.2f}")
+
+    st.divider()
+
+    # Event Context
     evt_label = f"**{log['Event_Name']}**: {log['Event_Desc']}"
     if log['Event_Bad']: st.error(evt_label)
     else: st.success(evt_label)
     
-    c1, c2 = st.columns(2)
-    c1.metric("Revenue", f"${log['Rev']:,.0f}")
-    c2.metric("OpEx", f"-${log['OpEx']:,.0f}")
-    
-    c3, c4 = st.columns(2)
-    c3.metric("Fines/Storage", f"-${log['Storage'] + log['Fine']:,.0f}")
-    c4.metric("Net Profit", f"${log['Profit']:,.0f}", delta_color="normal" if log['Profit']>0 else "inverse")
-    
-    st.divider()
-    st.caption(f"Market Clearing Price: ${log['Price']:.2f}")
-    
-    if st.button("Close & Start Next Season"):
-        st.session_state.show_summary = False
-        st.rerun()
+    # 2. Bankruptcy Check (The Critical Fix)
+    if player.cash < 0:
+        st.error("🚨 **INSOLVENCY NOTICE:** Your cash balance is negative. The bank has seized assets.")
+        # Force Game Over if they accept
+        if st.button("Accept Bankruptcy (Game Over)", type="primary"):
+            st.session_state.show_summary = False
+            st.session_state.game_active = False
+            st.session_state.game_over_msg = f"GAME OVER: Bankrupt in Season {st.session_state.season - 1}"
+            st.rerun()
+    else:
+        # Standard Continue
+        if st.button("Close & Start Next Season", type="primary"):
+            st.session_state.show_summary = False
+            st.rerun()
 
 # --- GAME ENGINE ---
 def execute_turn(player_capacity, player_sell_pct, player_build_req):
@@ -361,15 +374,13 @@ def scrap_asset(idx):
     st.rerun()
 
 # --- UI RENDERER ---
-# --- UI RENDERER ---
 def main():
     if not st.session_state.game_active:
-        st.title("👑 King of the Roost")
-        st.caption("A High-Stakes Agricultural M&A Simulator")
-        st.markdown("---")
+        st.title("King of the Roost")
+        st.caption("Supply, Demand, and Hostile Takeovers")
         
-        col1, col2 = st.columns([1.2, 1])
-        
+        # --- LANDING PAGE (Restoring your original text) ---
+        col1, col2 = st.columns(2)
         with col1:
             st.subheader("The Situation")
             st.markdown("""
@@ -415,185 +426,138 @@ def main():
             * If you spend **LESS** money than the Tycoon in a turn (saving cash), you gain **Insider Intel**.
             * This reveals the next season's Demand Forecast *before* you act.
             """)
-
+            
+            if st.session_state.game_over_msg:
+                st.error(st.session_state.game_over_msg)
         return
 
     # --- POPUP CHECK ---
     if st.session_state.show_summary:
         show_season_summary_dialog()
 
-    # --- DASHBOARD ---
+    # --- MAIN DASHBOARD ---
     player = st.session_state.player
     tycoon = st.session_state.opponents[2]
     
-    st.markdown(f"### 🗓️ Season {st.session_state.season} / 40")
+    # 1. HEADER METRICS (New: Added Sheds & Max Capacity)
+    prod_bonus = sum(c.get('prod_bonus', 0) for c in player.cards)
+    max_capacity = player.sheds * (BASE_PROD + prod_bonus)
     
-    # --- 1. MARKET FORECAST (NEW VISIBILITY) ---
-    has_intel = (st.session_state.season > 1) and (player.spent_last_turn < tycoon.spent_last_turn)
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Season", f"{st.session_state.season}/40")
+    m2.metric("Cash", f"${player.cash:,.0f}")
+    m3.metric("Inventory", f"{player.inventory:,.0f}")
+    m4.metric("Sheds Owned", f"{player.sheds}")
+    m5.metric("Max Capacity", f"{max_capacity:,.0f}", help="Total potential output at 100% intensity")
     
-    # Calculate Forecasts
-    next_evt = st.session_state.next_event_name
-    demand_mod = EVENTS[next_evt]['demand_mod']
-    projected_demand = BASE_DEMAND * demand_mod
-    
-    last_supply = st.session_state.get('last_total_supply', 2000)
-    pro_forma_price = (projected_demand / last_supply) * 4.0
-    
-    with st.container(border=True):
-        mc1, mc2, mc3 = st.columns(3)
-        
-        with mc1:
-            st.caption("GLOBAL SUPPLY (COMPETITORS)")
-            total_ai_sheds = sum(ai.sheds for ai in st.session_state.opponents if not ai.bankrupt)
-            st.metric("Rival Sheds", f"{total_ai_sheds}", help="More Rival Sheds = Higher Supply Risk")
-            
-        with mc2:
-            st.caption("MARKET FORECAST")
-            if has_intel:
-                evt_color = "red" if EVENTS[next_evt]['bad'] else "green"
-                st.markdown(f"**Event:** :{evt_color}[{next_evt}]")
-                st.markdown(f"**Demand:** {int(demand_mod*100)}% of Normal")
-            else:
-                st.markdown("**Event:** ???")
-                st.markdown("**Demand:** ???")
-                st.caption("ℹ️ *Spend less than Tycoon to unlock*")
-        
-        with mc3:
-            st.caption("PRICE OUTLOOK")
-            if has_intel:
-                delta = pro_forma_price - 4.0
-                st.metric("Projected Spot Price", f"${pro_forma_price:.2f}", delta=f"{delta:.2f}", help="Assumes supply stays constant.")
-            else:
-                st.metric("Projected Spot Price", "???", delta=None)
-
     st.markdown("---")
 
-    # 2. KEY METRICS
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Cash", f"${player.cash:,.0f}", delta=f"${player.last_turn_log.get('Profit', 0):,.0f}")
-    m2.metric("Inventory", f"{player.inventory:,.0f} Units", delta=f"{player.last_turn_log.get('Sales', 0) * -1:,.0f} Sold")
-    m3.metric("Your Cost Basis", f"${player.breakeven_price:.2f}", delta=f"${player.breakeven_price - 3.50:.2f}", delta_color="inverse")
-    m4.metric("Tycoon Cost", f"${tycoon.breakeven_price:.2f}", "Target to Beat", delta_color="off")
+    # 2. TWO-COLUMN LAYOUT
+    left_col, right_col = st.columns([1, 1])
 
-    st.markdown("---")
-
-    # 3. TRADING DESK
-    c_trade, c_comp = st.columns([1.2, 1])
-    
-    with c_trade:
-        st.subheader("📊 Trading Desk")
+    with left_col:
+        st.subheader("⚙️ Operations")
         
-        cost_diff = tycoon.breakeven_price - player.breakeven_price
-        if cost_diff > 0:
-            st.success(f"✅ **Efficiency Advantage:** You are ${cost_diff:.2f} cheaper than Tycoon.")
-        else:
-            st.error(f"⚠️ **Efficiency Warning:** Tycoon produces cheaper than you.")
-            
-        st.write("---")
-        
-        # PRODUCTION SLIDER (0 - 120%)
-        st.write("**1. Production Intensity**")
-        capacity_int = st.slider("Capacity %", 0, 120, 100)
+        # Production Controls
+        st.write("**Production Intensity**")
+        capacity_int = st.slider("Intensity %", 0, 120, 100)
         capacity = capacity_int / 100.0
         
-        if capacity_int == 0:
-            st.caption("🛑 **MOTHBALLED:** Production halted. $0 OpEx.")
-        elif capacity_int < 100:
-             st.caption(f"📉 **Undersupply:** Reducing burn rate. OpEx saved.")
-        elif capacity_int > 100:
+        if capacity_int == 0: st.caption("🛑 Mothballed ($0 OpEx)")
+        elif capacity_int > 100: 
             risk = int((capacity - 1.0) * FINE_CHANCE_SCALER * 100)
-            st.warning(f"🔥 +{capacity_int-100}% Supply | ⚠️ {risk}% Fine Risk")
-        else:
-            st.caption("✅ Standard Production")
-
-        st.markdown("###")
-            
-        st.write("**2. Sales Strategy (Inventory)**")
-        sell_int = st.slider("Percentage to Sell", 0, 100, 100)
+            st.warning(f"🔥 Overclocked ({risk}% Fine Risk)")
+        
+        st.write("**Sales Strategy**")
+        sell_int = st.slider("Sell %", 0, 100, 100)
         sell_pct = sell_int / 100.0
+        if sell_int < 100: st.caption(f"❄️ Storing {100-sell_int}%")
+
+        st.divider()
+        st.subheader("🛒 Market")
         
-        if sell_int < 100:
-            st.caption(f"❄️ Holding {100-sell_int}% in Cold Storage (Cost: ${STORAGE_COST_PER_UNIT}/unit)")
-        else:
-            st.caption("🔥 Dumping 100% of Inventory to Market")
+        # Expansion
+        can_build = player.cash >= SHED_COST
+        build_btn = st.checkbox(f"Build Shed (${SHED_COST})", disabled=not can_build)
+        
+        # Cards Grid (Compact)
+        inventory_full = len(player.cards) >= 4
+        if inventory_full: st.error("Inventory Full (4/4). Scrap to buy.")
+        
+        c1, c2 = st.columns(2)
+        for i, card in enumerate(st.session_state.market_cards):
+            col = c1 if i % 2 == 0 else c2 
+            if card:
+                is_selected = (st.session_state.pending_card == i)
+                btn_label = "DESELECT" if is_selected else f"BUY ${card['cost']}"
+                if is_selected: col.markdown(f"**:red[{card['name']}]**")
+                else: col.markdown(f"**{card['name']}**")
+                
+                disable = (inventory_full and not is_selected) or (player.cash < card['cost'])
+                if col.button(btn_label, key=f"c_{i}", disabled=disable):
+                    select_card(i)
+                    st.rerun()
+            else:
+                col.info("Sold")
 
         st.markdown("###")
-        can_build = player.cash >= SHED_COST
-        build_btn = st.checkbox(f"Expand Production (+1 Shed: ${SHED_COST})", disabled=not can_build)
-        
-        if st.button("🔴 EXECUTE TRADES", type="primary", use_container_width=True):
+        if st.button("🔴 RUN SEASON", type="primary", use_container_width=True):
             execute_turn(capacity, sell_pct, build_btn)
             st.rerun()
 
-    with c_comp:
-        st.subheader("🎯 M&A Targets")
-        for i, ai in enumerate(st.session_state.opponents):
-            buyout_cost = ai.valuation * 1.3
-            status = "red" if ai.bankrupt else "green"
-            
-            with st.container():
-                st.markdown(f"**{ai.name}** :{status}[●]")
-                if not ai.bankrupt:
-                    c1, c2 = st.columns(2)
-                    c1.caption(f"Sheds: {ai.sheds}")
-                    c2.caption(f"Cost: ${ai.breakeven_price:.2f}")
-                    if st.button(f"ACQUIRE (${buyout_cost:,.0f})", key=f"buy_{i}", disabled=(player.cash < buyout_cost)):
-                        attempt_buyout(i)
-                else:
-                    st.caption("❌ BANKRUPT / ACQUIRED")
-                st.divider()
+    with right_col:
+        # Market Intel Section
+        st.subheader("📡 Market Intel")
+        
+        has_intel = (st.session_state.season > 1) and (player.spent_last_turn < tycoon.spent_last_turn)
+        next_evt = st.session_state.next_event_name
+        
+        with st.container(border=True):
+            if has_intel:
+                evt_bad = EVENTS[next_evt]['bad']
+                icon = "📉" if evt_bad else "📈"
+                st.markdown(f"**Forecast:** {icon} {next_evt}")
                 
-    # 4. MARKET ROW (With Inventory Logic)
-    st.subheader("🛒 Capital Improvements")
-    
-    inventory_full = len(player.cards) >= 4
-    if inventory_full:
-        st.error("⚠️ **Inventory Full (4/4):** You must scrap an asset below to buy a new one.")
-    
-    mc1, mc2, mc3, mc4 = st.columns(4)
-    for i, card in enumerate(st.session_state.market_cards):
-        col = [mc1, mc2, mc3, mc4][i]
-        if card is None:
-            col.info("SOLD")
-        else:
-            is_selected = (st.session_state.pending_card == i)
-            if is_selected: col.markdown(f"**:red[SELECTED]**")
-            col.write(f"**{card['icon']} {card['name']}**")
-            col.caption(f"{card['desc']}")
-            col.write(f"**${card['cost']}**")
-            
-            disable_btn = (st.session_state.pending_card is not None and not is_selected) or \
-                          (player.cash < card['cost']) or \
-                          (inventory_full and not is_selected)
-            
-            label = "DESELECT" if is_selected else "BUY"
-            if col.button(label, key=f"card_{i}", disabled=disable_btn):
-                select_card(i)
-                st.rerun()
+                # Pro Forma Price Calculation
+                last_supply = st.session_state.get('last_total_supply', 2000)
+                proj_demand = BASE_DEMAND * EVENTS[next_evt]['demand_mod']
+                proj_price = (proj_demand / last_supply) * 4.0
+                st.metric("Proj. Price", f"${proj_price:.2f}", help="Estimated price if supply stays flat")
+            else:
+                st.markdown("**Forecast:** ???")
+                st.caption("Save cash to unlock intel.")
+        
+        # Competitors Section
+        st.subheader("🎯 Competitors")
+        for i, ai in enumerate(st.session_state.opponents):
+            if not ai.bankrupt:
+                cc1, cc2, cc3 = st.columns([2, 1, 1])
+                cc1.markdown(f"**{ai.name}**")
+                cc1.caption(f"Cost: ${ai.breakeven_price:.2f}")
+                
+                cost = ai.valuation * 1.3
+                if cc3.button("Buy", key=f"acq_{i}", disabled=player.cash < cost):
+                    attempt_buyout(i)
+                cc2.markdown(f"${cost:,.0f}")
+            else:
+                st.caption(f"❌ {ai.name} (Eliminated)")
 
-    # 5. PLAYER ASSETS
-    if player.cards:
-        st.markdown("### 🏚️ Your Assets (Max 4)")
-        ac_cols = st.columns(4)
-        for i, c in enumerate(player.cards):
-            with ac_cols[i % 4]:
-                st.success(f"{c['icon']} {c['name']}")
-                if st.button("❌ SCRAP", key=f"scrap_{i}", help="Destroy this asset to make room."):
+        # Asset Scrapping
+        if player.cards:
+            st.divider()
+            st.caption("Your Upgrades (Click to Scrap)")
+            for i, c in enumerate(player.cards):
+                if st.button(f"🗑️ {c['name']}", key=f"scrap_{i}"):
                     scrap_asset(i)
 
-    # 6. CHART
+    # Chart
     if len(st.session_state.history) > 1:
-        st.markdown("### Market History")
+        st.divider()
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['PlayerCash'], name='Your Cash', line=dict(color='green')))
-        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['TycoonCash'], name='Tycoon Cash', line=dict(color='red')))
-        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['Price'], name='Spot Price', line=dict(color='blue', dash='dot'), yaxis='y2'))
-        
-        fig.update_layout(
-            yaxis=dict(title="Cash Balance"),
-            yaxis2=dict(title="Spot Price ($)", overlaying='y', side='right'),
-            legend=dict(orientation="h", y=1.1)
-        )
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['PlayerCash'], name='You', line=dict(color='green')))
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['TycoonCash'], name='Tycoon', line=dict(color='red')))
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['Price'], name='Price', line=dict(color='blue', dash='dot'), yaxis='y2'))
+        fig.update_layout(height=300, margin=dict(t=0, b=0, l=0, r=0), yaxis2=dict(overlaying='y', side='right'))
         st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
