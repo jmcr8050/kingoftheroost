@@ -516,7 +516,7 @@ def main():
             st.markdown(f"""
             * **Shed Cost:** ${SHED_COST:,.0f}
             * **Base Cost:** ~$3.50/bird
-            * **Fine Risk:** $500 + Production Loss
+            * **Fine Risk:** $500
             """)
 
         return
