@@ -166,19 +166,16 @@ def init_game():
     
     st.session_state.history = pd.DataFrame(columns=["Season", "Price", "PlayerCash", "TycoonCash"])
 
-# --- POPUP DIALOG (Updated with Bankruptcy Logic) ---
+# --- POPUP DIALOG (With Bankruptcy Check) ---
 @st.dialog("Quarterly Report", width="large")
 def show_season_summary_dialog():
     player = st.session_state.player
     log = player.last_turn_log
     
-    # 1. Financials Header
     st.subheader(f"Season {st.session_state.season - 1} Results")
     
-    # Cash Movement Calculation
+    # Financials
     start_cash = player.cash - log['Profit']
-    
-    # Metrics Row
     c1, c2, c3 = st.columns(3)
     c1.metric("Start Cash", f"${start_cash:,.0f}")
     c2.metric("End Cash", f"${player.cash:,.0f}", delta=f"${log['Profit']:,.0f}")
@@ -191,10 +188,9 @@ def show_season_summary_dialog():
     if log['Event_Bad']: st.error(evt_label)
     else: st.success(evt_label)
     
-    # 2. Bankruptcy Check (The Critical Fix)
+    # Bankruptcy Check
     if player.cash < 0:
         st.error("🚨 **INSOLVENCY NOTICE:** Your cash balance is negative. The bank has seized assets.")
-        # Force Game Over if they accept
         if st.button("Accept Bankruptcy (Game Over)", type="primary"):
             st.session_state.show_summary = False
             st.session_state.game_active = False
@@ -379,7 +375,7 @@ def main():
         st.title("King of the Roost")
         st.caption("Supply, Demand, and Hostile Takeovers")
         
-        # --- LANDING PAGE (Restoring your original text) ---
+        # --- LANDING PAGE ---
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("The Situation")
@@ -431,15 +427,26 @@ def main():
                 st.error(st.session_state.game_over_msg)
         return
 
-    # --- POPUP CHECK ---
+    # --- POPUP BLOCKER (BUG FIX) ---
+    # If the summary is active, we STOP here. We do not render the dashboard.
+    # This prevents you from changing variables while the popup is "technically" open.
     if st.session_state.show_summary:
         show_season_summary_dialog()
+        
+        # Background "Waiting Room" UI
+        st.info("📝 **Season Complete.** Please review and close the Quarterly Report popup to continue.")
+        st.caption("If you closed the popup with 'X' by mistake, click below to re-open it.")
+        if st.button("Re-open Report"):
+            show_season_summary_dialog()
+        
+        # CRITICAL: Stop execution so the rest of the UI doesn't load
+        return
 
-    # --- MAIN DASHBOARD ---
+    # --- MAIN DASHBOARD (Only loads if summary is closed) ---
     player = st.session_state.player
     tycoon = st.session_state.opponents[2]
     
-    # 1. HEADER METRICS (New: Added Sheds & Max Capacity)
+    # 1. HEADER METRICS
     prod_bonus = sum(c.get('prod_bonus', 0) for c in player.cards)
     max_capacity = player.sheds * (BASE_PROD + prod_bonus)
     
@@ -458,6 +465,13 @@ def main():
     with left_col:
         st.subheader("⚙️ Operations")
         
+        # Efficiency Alert
+        cost_diff = tycoon.breakeven_price - player.breakeven_price
+        if cost_diff > 0:
+            st.success(f"✅ **Efficiency Advantage:** You are ${cost_diff:.2f} cheaper than Tycoon.")
+        else:
+            st.error(f"⚠️ **Efficiency Warning:** Tycoon produces cheaper than you (Diff: ${abs(cost_diff):.2f}).")
+            
         # Production Controls
         st.write("**Production Intensity**")
         capacity_int = st.slider("Intensity %", 0, 120, 100)
@@ -480,7 +494,7 @@ def main():
         can_build = player.cash >= SHED_COST
         build_btn = st.checkbox(f"Build Shed (${SHED_COST})", disabled=not can_build)
         
-        # Cards Grid (Compact)
+        # Cards Grid
         inventory_full = len(player.cards) >= 4
         if inventory_full: st.error("Inventory Full (4/4). Scrap to buy.")
         
@@ -488,15 +502,21 @@ def main():
         for i, card in enumerate(st.session_state.market_cards):
             col = c1 if i % 2 == 0 else c2 
             if card:
-                is_selected = (st.session_state.pending_card == i)
-                btn_label = "DESELECT" if is_selected else f"BUY ${card['cost']}"
-                if is_selected: col.markdown(f"**:red[{card['name']}]**")
-                else: col.markdown(f"**{card['name']}**")
-                
-                disable = (inventory_full and not is_selected) or (player.cash < card['cost'])
-                if col.button(btn_label, key=f"c_{i}", disabled=disable):
-                    select_card(i)
-                    st.rerun()
+                with col.container(border=True):
+                    is_selected = (st.session_state.pending_card == i)
+                    
+                    if is_selected: st.markdown(f"**:red[{card['icon']} {card['name']}]**")
+                    else: st.markdown(f"**{card['icon']} {card['name']}**")
+                    
+                    st.caption(card['desc'])
+                    st.write(f"**${card['cost']}**")
+                    
+                    btn_label = "DESELECT" if is_selected else "BUY"
+                    disable = (inventory_full and not is_selected) or (player.cash < card['cost'])
+                    
+                    if st.button(btn_label, key=f"c_{i}", disabled=disable):
+                        select_card(i)
+                        st.rerun()
             else:
                 col.info("Sold")
 
@@ -506,11 +526,13 @@ def main():
             st.rerun()
 
     with right_col:
-        # Market Intel Section
         st.subheader("📡 Market Intel")
         
         has_intel = (st.session_state.season > 1) and (player.spent_last_turn < tycoon.spent_last_turn)
         next_evt = st.session_state.next_event_name
+        
+        last_price = player.last_turn_log.get('Price', 4.00)
+        st.caption(f"Last Season Clearing Price: **${last_price:.2f}**")
         
         with st.container(border=True):
             if has_intel:
@@ -518,7 +540,10 @@ def main():
                 icon = "📉" if evt_bad else "📈"
                 st.markdown(f"**Forecast:** {icon} {next_evt}")
                 
-                # Pro Forma Price Calculation
+                demand_impact = int((EVENTS[next_evt]['demand_mod'] - 1.0) * 100)
+                if demand_impact > 0: st.caption(f"Demand Impact: +{demand_impact}%")
+                else: st.caption(f"Demand Impact: {demand_impact}%")
+                
                 last_supply = st.session_state.get('last_total_supply', 2000)
                 proj_demand = BASE_DEMAND * EVENTS[next_evt]['demand_mod']
                 proj_price = (proj_demand / last_supply) * 4.0
@@ -527,27 +552,30 @@ def main():
                 st.markdown("**Forecast:** ???")
                 st.caption("Save cash to unlock intel.")
         
-        # Competitors Section
         st.subheader("🎯 Competitors")
         for i, ai in enumerate(st.session_state.opponents):
             if not ai.bankrupt:
-                cc1, cc2, cc3 = st.columns([2, 1, 1])
-                cc1.markdown(f"**{ai.name}**")
-                cc1.caption(f"Cost: ${ai.breakeven_price:.2f}")
-                
-                cost = ai.valuation * 1.3
-                if cc3.button("Buy", key=f"acq_{i}", disabled=player.cash < cost):
-                    attempt_buyout(i)
-                cc2.markdown(f"${cost:,.0f}")
+                with st.container(border=True):
+                    c_head, c_btn = st.columns([2, 1])
+                    c_head.markdown(f"**{ai.name}**")
+                    
+                    buyout_cost = ai.valuation * 1.3
+                    if c_btn.button(f"Buy (${buyout_cost:,.0f})", key=f"acq_{i}", disabled=player.cash < buyout_cost):
+                        attempt_buyout(i)
+                    
+                    s1, s2, s3 = st.columns(3)
+                    s1.caption(f"🏰 {ai.sheds}")
+                    s2.caption(f"💰 ${ai.cash:,.0f}")
+                    s3.caption(f"📉 ${ai.breakeven_price:.2f}")
+
             else:
                 st.caption(f"❌ {ai.name} (Eliminated)")
 
-        # Asset Scrapping
         if player.cards:
             st.divider()
             st.caption("Your Upgrades (Click to Scrap)")
             for i, c in enumerate(player.cards):
-                if st.button(f"🗑️ {c['name']}", key=f"scrap_{i}"):
+                if st.button(f"🗑️ {c['name']} ({c['desc']})", key=f"scrap_{i}"):
                     scrap_asset(i)
 
     # Chart
