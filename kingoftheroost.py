@@ -27,32 +27,14 @@ CARDS_DB = [
     {"name": "Hatchery", "type": "Infra", "cost": 1000, "prod_bonus": 30, "desc": "+30 Chickens/Shed", "icon": "🏭"},
     {"name": "Solar Grid", "type": "Infra", "cost": 1200, "opex_save": 0.5, "desc": "-$0.50 OpEx/Bird", "icon": "☀️"},
     {"name": "Industrial Freezer", "type": "Infra", "cost": 500, "storage_save": True, "desc": "Halves Storage Costs", "icon": "❄️"},
-    {"name": "Crisis Mgmt Firm", "type": "Emp", "cost": 500, "risk_mitigation": True, "desc": "Mitigates Bad PR Events", "icon": "📢"},
-    {"name": "Adv. Biosecurity", "type": "Infra", "cost": 500, "bio_secure": True, "desc": "Prevents Recall Wipeouts", "icon": "🛡️"},
 ]
 
-# -- EVENTS (THEMATIC OVERHAUL) --
 EVENTS = {
-    "Normal": {
-        "prob": 0.4, "demand_mod": 1.0, "bad": False, "destroy_inv": False,
-        "desc": "Market is stable."
-    },
-    "Keto Diet Trend": {
-        "prob": 0.1, "demand_mod": 1.4, "bad": False, "destroy_inv": False,
-        "desc": "Carbs are out. Chicken is in. Demand SKYROCKETS (+40%)! 🔥"
-    },
-    "Supply Chain Scandal": {
-        "prob": 0.1, "demand_mod": 0.6, "bad": True, "destroy_inv": False,
-        "desc": "Leaked report shows bad practices. Consumers boycott (-40%). 📉"
-    },
-    "Chicken Sandwich War": {
-        "prob": 0.1, "demand_mod": 1.2, "bad": False, "destroy_inv": False,
-        "desc": "Fast food chains fighting for supply. Demand +20%. 🍔"
-    },
-    "Salmonella Recall": {
-        "prob": 0.1, "demand_mod": 0.5, "bad": True, "destroy_inv": True,
-        "desc": "CONTAMINATION DETECTED! Unsold inventory destroyed. Demand crashes. 🦠"
-    },
+    "Normal": {"prob": 0.4, "demand_mod": 1.0, "bad": False, "desc": "Stable demand."},
+    "Protein Craze": {"prob": 0.1, "demand_mod": 1.4, "bad": False, "desc": "Demand SKYROCKETS! (+40%) 🔥"},
+    "Recession": {"prob": 0.1, "demand_mod": 0.7, "bad": True, "desc": "Consumers cutting back. Demand -30% 📉"},
+    "Export Deal": {"prob": 0.1, "demand_mod": 1.2, "bad": False, "desc": "New trade route opened. Demand +20% 🚢"},
+    "Health Scare": {"prob": 0.1, "demand_mod": 0.6, "bad": True, "desc": "Chicken fearful. Demand -40% 🦠"},
 }
 
 # --- CLASSES ---
@@ -91,8 +73,9 @@ class Farm:
         self.valuation = max(liquidation_value, earnings_value)
 
     def add_card(self, card):
+        # AI Logic: Discard cheapest if full
         if len(self.cards) >= 4:
-            self.cards.sort(key=lambda x: x['cost']) 
+            self.cards.sort(key=lambda x: x['cost'])
             self.cards.pop(0) 
         self.cards.append(card)
         self.recalculate_breakeven()
@@ -148,27 +131,24 @@ def get_ai_decision(ai: Farm, player: Farm, market_cards):
 # --- SESSION STATE ---
 if 'game_active' not in st.session_state: st.session_state.game_active = False
 if 'game_over_msg' not in st.session_state: st.session_state.game_over_msg = ""
-if 'game_won' not in st.session_state: st.session_state.game_won = False
 if 'pending_card' not in st.session_state: st.session_state.pending_card = None 
 if 'next_event_name' not in st.session_state: st.session_state.next_event_name = "Normal"
 if 'show_summary' not in st.session_state: st.session_state.show_summary = False
-if 'show_game_over' not in st.session_state: st.session_state.show_game_over = False
-if 'last_sell_pct' not in st.session_state: st.session_state.last_sell_pct = 100 # Default to 100%
+# New: Track total supply for forecasting
+if 'last_total_supply' not in st.session_state: st.session_state.last_total_supply = 500 
 
 def get_random_event():
     return random.choices(list(EVENTS.keys()), weights=[0.4, 0.1, 0.1, 0.1, 0.1], k=1)[0]
 
 def init_game():
     st.session_state.game_active = True
-    st.session_state.game_won = False
-    st.session_state.show_game_over = False
     st.session_state.season = 1
     st.session_state.market_cards = random.sample(CARDS_DB, 4)
     st.session_state.game_over_msg = ""
     st.session_state.pending_card = None
     st.session_state.next_event_name = get_random_event()
     st.session_state.show_summary = False
-    st.session_state.last_sell_pct = 100
+    st.session_state.last_total_supply = 500
     
     st.session_state.player = Farm("You", SHED_START_COUNT, 2000.0, personality="Player", is_player=True)
     st.session_state.player.update_valuation() 
@@ -186,8 +166,7 @@ def init_game():
     
     st.session_state.history = pd.DataFrame(columns=["Season", "Price", "PlayerCash", "TycoonCash"])
 
-# --- POPUP DIALOGS ---
-
+# --- POPUP DIALOG ---
 @st.dialog("📋 Quarterly Report")
 def show_season_summary_dialog():
     player = st.session_state.player
@@ -195,7 +174,6 @@ def show_season_summary_dialog():
     
     st.markdown(f"### Season {st.session_state.season - 1} Results")
     
-    # Event Context
     evt_label = f"**{log['Event_Name']}**: {log['Event_Desc']}"
     if log['Event_Bad']: st.error(evt_label)
     else: st.success(evt_label)
@@ -215,63 +193,21 @@ def show_season_summary_dialog():
         st.session_state.show_summary = False
         st.rerun()
 
-@st.dialog("🏁 GAME OVER")
-def show_game_over_dialog():
-    if st.session_state.game_won:
-        st.markdown("## 🏆 VICTORY!")
-        st.balloons()
-        st.success("You have acquired all competitors!")
-        st.markdown("""
-        **Apex Global Foods** has arrived. 
-        As the sole remaining operator, they have written you a check for **$50,000,000**.
-        
-        You are the King of the Roost.
-        """)
-    elif st.session_state.player.bankrupt:
-        st.markdown("## 💸 BANKRUPT")
-        st.error("You ran out of cash.")
-        st.markdown("""
-        Your creditors have seized your farm. 
-        The Tycoon bought your assets at auction for pennies on the dollar.
-        
-        **Tip:** Watch your cash flow. Expanding too fast is the quickest way to die.
-        """)
-    else:
-        st.markdown("## 💀 TIME'S UP")
-        st.error("Season 40 has arrived.")
-        st.markdown("""
-        **Apex Global Foods** has arrived. 
-        They found **The Tycoon** (or others) still operating in the valley.
-        
-        Because you failed to consolidate the monopoly, Apex acquired The Tycoon instead.
-        You have been pushed out of the market.
-        """)
-        
-    st.divider()
-    if st.button("Return to Main Menu"):
-        st.session_state.game_active = False
-        st.session_state.show_game_over = False
-        st.rerun()
-
 # --- GAME ENGINE ---
 def execute_turn(player_capacity, player_sell_pct, player_build_req):
     player = st.session_state.player
     opponents = st.session_state.opponents
     
-    # Update Memory for Slider
-    st.session_state.last_sell_pct = int(player_sell_pct * 100)
-    
-    # 1. Reset Spend Logic
     player.spent_last_turn = 0
     for ai in opponents: ai.spent_last_turn = 0
     
-    # 2. Player Construction
+    # Construction
     if player_build_req and player.cash >= SHED_COST:
         player.cash -= SHED_COST
         player.sheds += 1
         player.spent_last_turn += SHED_COST
         
-    # 3. Player Purchase
+    # Purchasing
     if st.session_state.pending_card is not None:
         c_idx = st.session_state.pending_card
         card = st.session_state.market_cards[c_idx]
@@ -283,7 +219,7 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
                 st.session_state.market_cards[c_idx] = None 
     st.session_state.pending_card = None 
 
-    # 4. AI ACTIONS
+    # AI Actions
     for ai in opponents:
         if ai.bankrupt: continue
         
@@ -306,47 +242,33 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
                     ai.spent_last_turn += card['cost']
                     st.session_state.market_cards[card_idx] = None 
     
-    # --- 5. SUPPLY & DEMAND ENGINE ---
+    # --- SUPPLY & DEMAND CALCULATION ---
     
     evt_name = st.session_state.next_event_name
     evt_data = EVENTS[evt_name]
     
-    # Calculate Demand
     current_demand = BASE_DEMAND * evt_data['demand_mod']
     total_supply_produced = 0
     
     all_farms = [player] + opponents
     
-    # PRODUCTION PHASE
     for farm in all_farms:
         if farm.bankrupt: continue
         
-        # Determine Capacity
         if farm.is_player: cap = player_capacity
         else: cap = farm.temp_capacity
             
         prod_bonus = sum(c.get('prod_bonus', 0) for c in farm.cards)
         raw_prod = farm.sheds * (BASE_PROD + prod_bonus) * cap
         
-        # Regulatory Fine Check
         fine = 0.0
         if cap > 1.0:
             chance = (cap - 1.0) * FINE_CHANCE_SCALER
             if random.random() < chance:
                 fine = REGULATORY_FINE
         
-        # Add to Inventory
         farm.inventory += raw_prod
         
-        # CHECK RECALL EVENT (Destroy Inventory)
-        if evt_data['destroy_inv']:
-            has_protection = any(c.get('bio_secure', False) for c in farm.cards)
-            if not has_protection:
-                # Inventory Destroyed
-                farm.inventory = 0
-                # Note: They produced, so they pay OpEx, but they have 0 to sell.
-        
-        # Determine Sales
         if farm.is_player: sales_vol = farm.inventory * player_sell_pct
         else: sales_vol = farm.inventory * farm.temp_sell_pct
             
@@ -354,41 +276,27 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         farm.temp_fine = fine
         total_supply_produced += sales_vol
 
-    # PRICE DISCOVERY
+    # Price Discovery
     safe_supply = max(500, total_supply_produced)
     market_price = (current_demand / safe_supply) * 4.0 
     market_price = max(0.50, market_price)
     
-    # FINANCIAL SETTLEMENT
+    # Save Supply for next turn's forecast
+    st.session_state.last_total_supply = safe_supply
+    
+    # Settlement
     for farm in all_farms:
         if farm.bankrupt: continue
         
         revenue = farm.temp_sales * market_price
         farm.inventory -= farm.temp_sales
         
-        # Recalc OpEx (Based on Production, not sales)
         if farm.is_player: cap = player_capacity
         else: cap = farm.temp_capacity
+        
         prod_bonus = sum(c.get('prod_bonus', 0) for c in farm.cards)
         produced_this_turn = farm.sheds * (BASE_PROD + prod_bonus) * cap
-        
-        # OpEx modifiers
-        opex_base = farm.breakeven_price 
-        # Note: farm.breakeven_price is calculated on card add. 
-        # But we also have Crisis Firm logic to add:
-        # If event is BAD, and you have Crisis Firm, we need to mitigate the badness?
-        # Actually, Crisis Firm in this engine should probably mitigate Demand drops?
-        # Implementing Crisis Firm as a Revenue Buffer for simplicity here:
-        # If Event is Bad, and you have Crisis Firm, you get +$0.50 premium on price.
-        has_crisis_firm = any(c.get('risk_mitigation', False) for c in farm.cards)
-        price_mod = 0
-        if evt_data['bad'] and has_crisis_firm:
-            price_mod = 0.50
-            
-        final_price_for_farm = market_price + price_mod
-        revenue = farm.temp_sales * final_price_for_farm
-        
-        opex = produced_this_turn * opex_base
+        opex = produced_this_turn * farm.breakeven_price
         
         has_freezer = any(c.get('storage_save', False) for c in farm.cards)
         store_rate = STORAGE_COST_PER_UNIT * 0.5 if has_freezer else STORAGE_COST_PER_UNIT
@@ -407,38 +315,25 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         else: farm.avg_ebitda = (farm.avg_ebitda * 0.7) + (profit * 0.3)
         
         farm.update_valuation()
-        # BANKRUPTCY CHECK IN LOOP (For AI)
         if farm.cash < 0: farm.bankrupt = True
 
-    # CLEANUP
+    # Cleanup
     for i in range(4):
         if st.session_state.market_cards[i] is None:
             st.session_state.market_cards[i] = random.choice(CARDS_DB)
 
     st.session_state.season += 1
     st.session_state.next_event_name = get_random_event()
-    
-    # Trigger Summary Popup
     st.session_state.show_summary = True
     
     tycoon = opponents[2]
     new_hist = {"Season": st.session_state.season-1, "Price": market_price, "PlayerCash": player.cash, "TycoonCash": tycoon.cash}
     st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([new_hist])], ignore_index=True)
 
-    # CHECK PLAYER BANKRUPTCY
-    if player.cash < 0:
-        player.bankrupt = True
-        st.session_state.game_won = False
-        st.session_state.show_game_over = True
-        st.session_state.show_summary = False
-        return
-
-    # CHECK TIME LIMIT
     if st.session_state.season > 40:
         if not opponents[2].bankrupt: 
-            st.session_state.game_won = False
-            st.session_state.show_game_over = True
-            st.session_state.show_summary = False 
+            st.session_state.game_active = False
+            st.session_state.game_over_msg = "GAME OVER: Tycoon survived."
 
 def attempt_buyout(ai_index):
     player = st.session_state.player
@@ -455,15 +350,7 @@ def attempt_buyout(ai_index):
         target.sheds = 0
         target.cash = 0
         st.success(f"Acquired {target.name}!")
-        
-        # CHECK WIN CONDITION
-        active_opponents = [ai for ai in st.session_state.opponents if not ai.bankrupt]
-        if len(active_opponents) == 0:
-            st.session_state.game_won = True
-            st.session_state.show_game_over = True
-            st.rerun()
-        else:
-            st.rerun()
+        st.rerun()
 
 def select_card(idx):
     if st.session_state.pending_card == idx: st.session_state.pending_card = None
@@ -474,57 +361,65 @@ def scrap_asset(idx):
     st.rerun()
 
 # --- UI RENDERER ---
+# --- UI RENDERER ---
 def main():
     if not st.session_state.game_active:
-        st.title("👑 King of the Roost: Trading Floor")
-        st.caption("Supply, Demand, and Hostile Takeovers")
+        st.title("👑 King of the Roost")
+        st.caption("A High-Stakes Agricultural M&A Simulator")
+        st.markdown("---")
         
-        col1, col2 = st.columns([1.5, 1])
+        col1, col2 = st.columns([1.2, 1])
+        
         with col1:
-            st.markdown("### 📜 The Situation")
+            st.subheader("The Situation")
             st.markdown("""
             You are a small-time operator in a cutthroat poultry market. 
             **The Tycoon** dominates the region with deep pockets.
             
-            But you have a secret: **Apex Global Foods** is entering the market in exactly **40 Seasons** (10 Years). 
-            They will write **one check** to the last player standing.
+            But you have received an inside tip: **Apex Global Foods** is entering the market in exactly **10 Years (40 Seasons)**. 
+            They are looking to acquire the regional monopoly and will write **one check** to the last player standing.
+            
+            If The Tycoon is still alive when the clock strikes Season 40, he gets the deal. You get nothing.
+            
+            🎯 **OBJECTIVE:** Bankrupt or Acquire all 3 competitors (especially The Tycoon) before Season 40.
             """)
             
-            st.info("""
-            **OBJECTIVE:** Acquire all 3 competitors before Season 40. 
-            **WARNING:** If your Cash hits $0, you are Bankrupt and the game ends immediately.
-            """)
-            
-            st.markdown("### 📉 Market Dynamics (Price Calculation)")
-            st.markdown("""
-            Unlike simpler markets, the price here is **floating** based on Supply & Demand.
-            
-            1.  **Global Demand:** Set by events (e.g., *Chicken Sandwich War* = High Demand).
-            2.  **Global Supply:** The total chickens sold by **You + The AI** this turn.
-            3.  **The Formula:** `Price = Total Demand / Total Supply`
-            
-            **The Strategy:** If the Tycoon floods the market, Supply spikes and Price crashes. 
-            You must decide whether to **Liquidate** (Sell into a crash) or **Hoard** (Hold stock in Freezer).
-            """)
+            st.error("💀 **WARNING:** If your Cash hits $0, you are liquidated immediately.")
             
             if st.button("Open Trading Desk", type="primary"):
                 init_game()
                 st.rerun()
-        
+
         with col2:
-            st.warning("### Unit Economics")
-            st.markdown(f"""
-            * **Shed Cost:** ${SHED_COST:,.0f}
-            * **Base Cost:** ~$3.50/bird
-            * **Fine Risk:** $500
+            st.subheader("Rules of Engagement")
+            st.markdown("""
+            **1. Production & Inventory**
+            Produce chickens and sell them on the market.
+            * **Sell:** Cash in immediately at the current market price.
+            * **Freeze:** Store inventory in the freezer to sell later (hoping for a price spike).
+            
+            **2. Supply & Demand**
+            The market price is determined by **Total Supply** (You + Competitors).
+            * **Flood the Market:** Price crashes.
+            * **Withhold Supply:** Price rises.
+            
+            **3. The Cost Curve (Strategy)**
+            * *Hint:* If you reduce your price of production below the Tycoon, you can **flood the market** to drive the price below *their* operating costs.
+            * **Result:** You profit; The Tycoon bleeds cash on every bird sold.
+            
+            **4. Overclocking (Risk)**
+            * You can push production to **120%** for extra revenue.
+            * **Risk:** 120% Capacity = **40% Chance** of a **Regulatory Fine** per turn.
+            
+            **5. Insider Intel**
+            * If you spend **LESS** money than the Tycoon in a turn (saving cash), you gain **Insider Intel**.
+            * This reveals the next season's Demand Forecast *before* you act.
             """)
 
         return
 
-    # --- POPUP LOGIC ---
-    if st.session_state.show_game_over:
-        show_game_over_dialog()
-    elif st.session_state.show_summary:
+    # --- POPUP CHECK ---
+    if st.session_state.show_summary:
         show_season_summary_dialog()
 
     # --- DASHBOARD ---
@@ -533,12 +428,45 @@ def main():
     
     st.markdown(f"### 🗓️ Season {st.session_state.season} / 40")
     
-    # 1. MARKET INTEL
+    # --- 1. MARKET FORECAST (NEW VISIBILITY) ---
     has_intel = (st.session_state.season > 1) and (player.spent_last_turn < tycoon.spent_last_turn)
-    if has_intel:
-        next_evt = st.session_state.next_event_name
-        is_bad = EVENTS[next_evt]['bad']
-        st.info(f"🕵️ **INSIDER INTEL:** Analysts predict **{next_evt}** next season.")
+    
+    # Calculate Forecasts
+    next_evt = st.session_state.next_event_name
+    demand_mod = EVENTS[next_evt]['demand_mod']
+    projected_demand = BASE_DEMAND * demand_mod
+    
+    last_supply = st.session_state.get('last_total_supply', 2000)
+    pro_forma_price = (projected_demand / last_supply) * 4.0
+    
+    with st.container(border=True):
+        mc1, mc2, mc3 = st.columns(3)
+        
+        with mc1:
+            st.caption("GLOBAL SUPPLY (COMPETITORS)")
+            total_ai_sheds = sum(ai.sheds for ai in st.session_state.opponents if not ai.bankrupt)
+            st.metric("Rival Sheds", f"{total_ai_sheds}", help="More Rival Sheds = Higher Supply Risk")
+            
+        with mc2:
+            st.caption("MARKET FORECAST")
+            if has_intel:
+                evt_color = "red" if EVENTS[next_evt]['bad'] else "green"
+                st.markdown(f"**Event:** :{evt_color}[{next_evt}]")
+                st.markdown(f"**Demand:** {int(demand_mod*100)}% of Normal")
+            else:
+                st.markdown("**Event:** ???")
+                st.markdown("**Demand:** ???")
+                st.caption("ℹ️ *Spend less than Tycoon to unlock*")
+        
+        with mc3:
+            st.caption("PRICE OUTLOOK")
+            if has_intel:
+                delta = pro_forma_price - 4.0
+                st.metric("Projected Spot Price", f"${pro_forma_price:.2f}", delta=f"{delta:.2f}", help="Assumes supply stays constant.")
+            else:
+                st.metric("Projected Spot Price", "???", delta=None)
+
+    st.markdown("---")
 
     # 2. KEY METRICS
     m1, m2, m3, m4 = st.columns(4)
@@ -549,7 +477,7 @@ def main():
 
     st.markdown("---")
 
-    # 3. TRADING DESK & COMPETITION
+    # 3. TRADING DESK
     c_trade, c_comp = st.columns([1.2, 1])
     
     with c_trade:
@@ -563,23 +491,31 @@ def main():
             
         st.write("---")
         
+        # PRODUCTION SLIDER (0 - 120%)
         st.write("**1. Production Intensity**")
-        capacity_int = st.slider("Overclock", 100, 120, 100)
+        capacity_int = st.slider("Capacity %", 0, 120, 100)
         capacity = capacity_int / 100.0
-        if capacity_int > 100:
+        
+        if capacity_int == 0:
+            st.caption("🛑 **MOTHBALLED:** Production halted. $0 OpEx.")
+        elif capacity_int < 100:
+             st.caption(f"📉 **Undersupply:** Reducing burn rate. OpEx saved.")
+        elif capacity_int > 100:
             risk = int((capacity - 1.0) * FINE_CHANCE_SCALER * 100)
             st.warning(f"🔥 +{capacity_int-100}% Supply | ⚠️ {risk}% Fine Risk")
+        else:
+            st.caption("✅ Standard Production")
+
+        st.markdown("###")
             
-        st.write("**2. Inventory Strategy (Sell vs Hold)**")
-        # Load previous value from state
-        default_sell = st.session_state.last_sell_pct
-        sell_int = st.slider("Percentage to Liquidate", 0, 100, default_sell)
+        st.write("**2. Sales Strategy (Inventory)**")
+        sell_int = st.slider("Percentage to Sell", 0, 100, 100)
         sell_pct = sell_int / 100.0
         
         if sell_int < 100:
-            st.caption(f"❄️ Hoarding {100-sell_int}% in Freezer (Speculating on future price)")
+            st.caption(f"❄️ Holding {100-sell_int}% in Cold Storage (Cost: ${STORAGE_COST_PER_UNIT}/unit)")
         else:
-            st.caption("🔥 Liquidating 100% (Cash Out Now)")
+            st.caption("🔥 Dumping 100% of Inventory to Market")
 
         st.markdown("###")
         can_build = player.cash >= SHED_COST
