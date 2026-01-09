@@ -63,17 +63,22 @@ class Farm:
         self.breakeven_price = max(0.5, cost)
 
     def update_valuation(self):
+        # 1. Asset Approach (Liquidation Value)
         asset_val = (self.sheds * SHED_COST) + sum(c['cost'] for c in self.cards) + (self.inventory * 2.0)
         liquidation_value = self.cash + asset_val
         
-        estimated_base_ebitda = self.sheds * 100 * 1.0 
+        # 2. Earnings Approach (EBITDA Multiple)
+        # Fix: Use actual BASE_PROD (80) instead of hardcoded 100
+        estimated_base_ebitda = self.sheds * BASE_PROD * 1.0 
         used_ebitda = max(estimated_base_ebitda, self.avg_ebitda)
-        earnings_value = self.cash + (used_ebitda * 5.0)
         
+        # CHANGE: Reduced Multiple from 5.0x to 4.0x (1x Cheaper)
+        earnings_value = self.cash + (used_ebitda * 4.0)
+        
+        # Valuation is whichever is higher
         self.valuation = max(liquidation_value, earnings_value)
 
     def add_card(self, card):
-        # AI Logic: Discard cheapest if full
         if len(self.cards) >= 4:
             self.cards.sort(key=lambda x: x['cost'])
             self.cards.pop(0) 
@@ -166,29 +171,70 @@ def init_game():
     
     st.session_state.history = pd.DataFrame(columns=["Season", "Price", "PlayerCash", "TycoonCash"])
 
-# --- POPUP DIALOG (With Bankruptcy Check) ---
+# --- POPUP DIALOG (Detailed P&L) ---
 @st.dialog("Quarterly Report", width="large")
 def show_season_summary_dialog():
     player = st.session_state.player
     log = player.last_turn_log
     
-    st.subheader(f"Season {st.session_state.season - 1} Results")
+    # 1. HEADLINE
+    st.subheader(f"Season {st.session_state.season - 1} Performance")
     
-    # Financials
-    start_cash = player.cash - log['Profit']
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Start Cash", f"${start_cash:,.0f}")
-    c2.metric("End Cash", f"${player.cash:,.0f}", delta=f"${log['Profit']:,.0f}")
-    c3.metric("Clearing Price", f"${log['Price']:.2f}")
+    # Event Banner
+    evt_label = f"**MARKET EVENT:** {log['Event_Name']} ({log['Event_Desc']})"
+    if log['Event_Bad']: st.error(evt_label)
+    else: st.success(evt_label)
+
+    # 2. VOLUME STATS (Birds)
+    st.caption("📦 OPERATIONS (VOLUME)")
+    v1, v2, v3, v4 = st.columns(4)
+    v1.metric("Produced", f"{int(log.get('Prod', 0))}", help="New birds hatched this turn")
+    v2.metric("Sold", f"{int(log['Sales'])}", help="Birds sold to market")
+    
+    # Calculate Net Inventory Move
+    net_stock = int(log.get('Prod', 0)) - int(log['Sales'])
+    v3.metric("Net Frozen", f"{net_stock:+}", help="Change in freezer stock")
+    v4.metric("Closing Inventory", f"{int(player.inventory)}")
 
     st.divider()
 
-    # Event Context
-    evt_label = f"**{log['Event_Name']}**: {log['Event_Desc']}"
-    if log['Event_Bad']: st.error(evt_label)
-    else: st.success(evt_label)
+    # 3. FINANCIALS (The P&L)
+    st.caption("💰 PROFIT & LOSS")
     
-    # Bankruptcy Check
+    # Revenue Row
+    c1, c2 = st.columns([3, 1])
+    c1.write("➕ **Revenue** (Sales x Price)")
+    c2.write(f"**${log['Rev']:,.0f}**")
+    
+    # Expenses Breakdown
+    # OpEx
+    c1, c2 = st.columns([3, 1])
+    c1.write(f"➖ OpEx (Production x ${player.breakeven_price:.2f})")
+    c2.write(f":red[-${log['OpEx']:,.0f}]")
+    
+    # Storage
+    if log['Storage'] > 0:
+        c1, c2 = st.columns([3, 1])
+        c1.write("➖ Freezer Costs (Storage)")
+        c2.write(f":red[-${log['Storage']:,.0f}]")
+        
+    # Fines
+    if log['Fine'] > 0:
+        c1, c2 = st.columns([3, 1])
+        c1.write("➖ **REGULATORY FINE**")
+        c2.write(f":red[-${log['Fine']:,.0f}]")
+
+    st.divider()
+    
+    # Net Profit Row
+    c1, c2 = st.columns([3, 1])
+    c1.markdown("### 🟰 Net Profit")
+    color = "green" if log['Profit'] > 0 else "red"
+    c2.markdown(f":{color}[**${log['Profit']:,.0f}**]")
+    
+    st.caption(f"Clearing Price: ${log['Price']:.2f}")
+
+    # 4. BANKRUPTCY CHECK
     if player.cash < 0:
         st.error("🚨 **INSOLVENCY NOTICE:** Your cash balance is negative. The bank has seized assets.")
         if st.button("Accept Bankruptcy (Game Over)", type="primary"):
@@ -197,7 +243,6 @@ def show_season_summary_dialog():
             st.session_state.game_over_msg = f"GAME OVER: Bankrupt in Season {st.session_state.season - 1}"
             st.rerun()
     else:
-        # Standard Continue
         if st.button("Close & Start Next Season", type="primary"):
             st.session_state.show_summary = False
             st.rerun()
@@ -315,9 +360,17 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         farm.cash += profit
         
         farm.last_turn_log = {
-            "Rev": revenue, "OpEx": opex, "Fine": farm.temp_fine, "Storage": storage_fees,
-            "Profit": profit, "Price": market_price, "Sales": farm.temp_sales,
-            "Event_Name": evt_name, "Event_Desc": evt_data['desc'], "Event_Bad": evt_data['bad']
+            "Rev": revenue, 
+            "OpEx": opex, 
+            "Fine": farm.temp_fine, 
+            "Storage": storage_fees,
+            "Profit": profit, 
+            "Price": market_price, 
+            "Sales": farm.temp_sales,
+            "Prod": raw_prod, # <--- NEW: Saving production volume for the report
+            "Event_Name": evt_name, 
+            "Event_Desc": evt_data['desc'], 
+            "Event_Bad": evt_data['bad']
         }
         
         if farm.avg_ebitda == 0: farm.avg_ebitda = profit
