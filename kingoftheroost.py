@@ -11,20 +11,20 @@ st.set_page_config(page_title="King of the Roost", page_icon="👑", layout="wid
 # -- ECONOMICS --
 SHED_COST = 1000
 SHED_START_COUNT = 3
-BASE_PROD = 100
-STORAGE_COST_PER_UNIT = 0.20
-REGULATORY_FINE = 500.0
+BASE_PROD = 80
+STORAGE_COST_PER_UNIT = 0.10
+REGULATORY_FINE = 600.0
 FINE_CHANCE_SCALER = 2.0
 
 # -- MARKET CONSTANTS --
-BASE_DEMAND = 2000.0
-DEMAND_ELASTICITY = 1.0
+BASE_DEMAND = 2500.0
+DEMAND_ELASTICITY = 1.2
 
 # -- ASSETS --
 CARDS_DB = [
-    {"name": "Master Breeder", "type": "Emp", "cost": 600, "prod_bonus": 20, "desc": "+20 Chickens/Shed", "icon": "👨‍🌾"},
-    {"name": "Efficiency Expert", "type": "Emp", "cost": 800, "opex_save": 0.5, "desc": "-$0.50 OpEx/Bird", "icon": "📉"},
-    {"name": "Hatchery", "type": "Infra", "cost": 1000, "prod_bonus": 30, "desc": "+30 Chickens/Shed", "icon": "🏭"},
+    {"name": "Master Breeder", "type": "Emp", "cost": 600, "prod_bonus": 10, "desc": "+10 Chickens/Shed", "icon": "👨‍🌾"},
+    {"name": "Efficiency Expert", "type": "Emp", "cost": 700, "opex_save": 0.5, "desc": "-$0.50 OpEx/Bird", "icon": "📉"},
+    {"name": "Hatchery", "type": "Infra", "cost": 1000, "prod_bonus": 20, "desc": "+20 Chickens/Shed", "icon": "🏭"},
     {"name": "Solar Grid", "type": "Infra", "cost": 1200, "opex_save": 0.5, "desc": "-$0.50 OpEx/Bird", "icon": "☀️"},
     {"name": "Industrial Freezer", "type": "Infra", "cost": 500, "storage_save": True, "desc": "Halves Storage Costs", "icon": "❄️"},
 ]
@@ -156,7 +156,7 @@ def init_game():
     st.session_state.opponents = [
         Farm("Small Fry", 3, 2000.0, personality="Conservative"),
         Farm("The Upstart", 4, 3000.0, personality="Aggressive"),
-        Farm("THE TYCOON", 6, 8000.0, personality="Predatory")
+        Farm("THE TYCOON", 6, 4000.0, personality="Predatory")
     ]
     st.session_state.opponents[2].add_card(CARDS_DB[2]) 
     
@@ -465,12 +465,19 @@ def main():
     with left_col:
         st.subheader("⚙️ Operations")
         
-        # Efficiency Alert
+ # 1. Explicit OpEx Display
+        st.caption(f"Current Unit Cost: **${player.breakeven_price:.2f} / bird**")
+
+        # 2. Efficiency Alert (With Parity Check)
         cost_diff = tycoon.breakeven_price - player.breakeven_price
-        if cost_diff > 0:
+        
+        if cost_diff > 0.001:
             st.success(f"✅ **Efficiency Advantage:** You are ${cost_diff:.2f} cheaper than Tycoon.")
-        else:
+        elif cost_diff < -0.001:
             st.error(f"⚠️ **Efficiency Warning:** Tycoon produces cheaper than you (Diff: ${abs(cost_diff):.2f}).")
+        else:
+            # If difference is effectively 0
+            st.info(f"⚖️ **Cost Parity:** You match the Tycoon's efficiency.")
             
         # Production Controls
         st.write("**Production Intensity**")
@@ -492,7 +499,7 @@ def main():
         
         # Expansion
         can_build = player.cash >= SHED_COST
-        build_btn = st.checkbox(f"Build Shed (${SHED_COST})", disabled=not can_build)
+        build_btn = st.checkbox(f"Build Shed (${SHED_COST}) - Adds {BASE_PROD} Chickens", disabled=not can_build)
         
         # Cards Grid
         inventory_full = len(player.cards) >= 4
