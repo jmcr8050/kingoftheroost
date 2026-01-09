@@ -5,7 +5,7 @@ import random
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (EXPERT TUNED) ---
 st.set_page_config(page_title="King of the Roost", page_icon="👑", layout="wide")
 
 # -- ECONOMICS --
@@ -18,11 +18,12 @@ REGULATORY_FINE = 600.0
 FINE_CHANCE_SCALER = 2.0
 
 # -- DEBT CONSTANTS --
-RATE_PRIME = 0.05       # 5% (Low Leverage)
-RATE_MEZZ = 0.09        # 9% (Med Leverage)
-RATE_JUNK = 0.15        # 15% (High Leverage)
-TIER_1_LTV = 0.30       # 30% Debt/Asset Ratio
-TIER_2_LTV = 0.60       # 60% Debt/Asset Ratio
+RATE_PRIME = 0.05       # 5% 
+RATE_MEZZ = 0.09        # 9% 
+RATE_JUNK = 0.15        # 15% 
+TIER_1_LTV = 0.30       
+TIER_2_LTV = 0.60       
+MAX_LTV = 0.70          # Hard Debt Cap
 
 # -- MARKET CONSTANTS --
 BASE_DEMAND = 2500.0    
@@ -55,10 +56,11 @@ class Farm:
         self.name = name
         self.sheds = sheds
         self.cash = cash
-        self.debt = 0.0
+        self.debt = 0.0 
         self.is_player = is_player
         self.personality = personality 
         
+        # State
         self.cards = []
         self.bankrupt = False
         self.valuation = 0.0
@@ -74,18 +76,28 @@ class Farm:
             cost -= c.get('opex_save', 0)
         self.breakeven_price = max(0.5, cost)
     
+    def get_asset_value(self):
+        # Collateral Value for Banks (Conservative)
+        # Cash + (Sheds * Cost * 80%) + (Inv * $1.50)
+        return self.cash + (self.sheds * SHED_COST * 0.8) + (self.inventory * 1.5)
+
+    def get_ltv(self):
+        assets = self.get_asset_value()
+        if assets <= 0: return 9.99 # Infinite leverage
+        return self.debt / assets
+
     def get_interest_rate(self):
-        assets = self.cash + (self.sheds * SHED_COST * 0.8) 
-        if assets == 0: return RATE_JUNK
-        ltv = self.debt / assets
+        ltv = self.get_ltv()
         if ltv < TIER_1_LTV: return RATE_PRIME
         elif ltv < TIER_2_LTV: return RATE_MEZZ
         else: return RATE_JUNK
 
     def update_valuation(self):
+        # 1. Liquidation Value (Net of Debt)
         asset_val = (self.sheds * SHED_COST) + sum(c['cost'] for c in self.cards) + (self.inventory * 2.0)
         liquidation_value = (self.cash + asset_val) - self.debt
         
+        # 2. Earnings Value (4x EBITDA) (Net of Debt)
         estimated_base_ebitda = self.sheds * BASE_PROD * 1.0 
         used_ebitda = max(estimated_base_ebitda, self.avg_ebitda)
         earnings_value = (self.cash + (used_ebitda * 4.0)) - self.debt
@@ -104,7 +116,7 @@ class Farm:
             self.cards.pop(index)
             self.recalculate_breakeven()
 
-# --- AI LOGIC ---
+# --- AI LOGIC BRAIN ---
 def get_ai_decision(ai: Farm, player: Farm, market_cards):
     variance = random.uniform(0.9, 1.1) 
     wants_to_build = False
@@ -112,23 +124,25 @@ def get_ai_decision(ai: Farm, player: Farm, market_cards):
     capacity = 1.0
     sell_pct = 1.0 
     
+    # 0. SURVIVAL CHECK
     est_interest = ai.debt * ai.get_interest_rate()
     burn_rate = (ai.sheds * FIXED_COST_PER_SHED) + est_interest
-    
     if ai.cash < (burn_rate * 2.0):
-        return False, None, 1.0, 1.0 
+        return False, None, 1.0, 1.0 # Panic Mode
 
+    # 1. Expansion
     if ai.personality == "Conservative":
         if ai.cash > (SHED_COST * 2.5 * variance): wants_to_build = True
     elif ai.personality == "Aggressive" or ai.personality == "Predatory":
         if ai.cash > (SHED_COST * 1.5 * variance): wants_to_build = True
 
+    # 2. Capacity
     if ai.personality == "Aggressive" and random.random() < 0.3: 
         capacity = 1.1
 
+    # 3. Predatory
     if ai.personality == "Predatory":
         is_player_weak = (player.cash < 1500) or (player.cash < (ai.cash * 0.2))
-        
         if is_player_weak and ai.cash > 2000:
             capacity = 1.2 
             sell_pct = 1.0 
@@ -138,6 +152,7 @@ def get_ai_decision(ai: Farm, player: Farm, market_cards):
             if has_freezer and random.random() < 0.3:
                 sell_pct = 0.5 
 
+    # 4. Cards
     best_card_idx = -1
     highest_cost = -1
     for i, card in enumerate(market_cards):
@@ -161,6 +176,8 @@ if 'next_event_name' not in st.session_state: st.session_state.next_event_name =
 if 'show_summary' not in st.session_state: st.session_state.show_summary = False
 if 'last_total_supply' not in st.session_state: st.session_state.last_total_supply = 500 
 if 'event_deck' not in st.session_state: st.session_state.event_deck = []
+# NEW: Track Net Borrowing for Reports
+if 'last_net_borrowing' not in st.session_state: st.session_state.last_net_borrowing = 0 
 
 def init_deck():
     deck = []
@@ -172,7 +189,8 @@ def init_deck():
     return deck
 
 def draw_event():
-    if not st.session_state.event_deck: return "Normal" 
+    if not st.session_state.event_deck:
+        return "Normal" 
     return st.session_state.event_deck.pop(0)
 
 def init_game():
@@ -185,6 +203,7 @@ def init_game():
     st.session_state.last_total_supply = 500
     st.session_state.event_deck = init_deck()
     st.session_state.next_event_name = draw_event()
+    st.session_state.last_net_borrowing = 0
     
     st.session_state.player = Farm("You", SHED_START_COUNT, 2500.0, personality="Player", is_player=True)
     st.session_state.player.update_valuation() 
@@ -202,31 +221,80 @@ def init_game():
     
     st.session_state.history = pd.DataFrame(columns=["Season", "Price", "PlayerCash", "TycoonCash"])
 
-# --- POPUP DIALOG ---
+# --- END GAME REPORT ---
+def draw_end_game_report():
+    st.divider()
+    msg = st.session_state.game_over_msg
+    is_win = "VICTORY" in msg
+    
+    if is_win:
+        st.success(f"# 🏆 MISSION ACCOMPLISHED")
+        st.markdown(f"### {msg}")
+        st.balloons()
+    else:
+        st.error(f"# 💀 TERMINATED")
+        st.markdown(f"### {msg}")
+
+    player = st.session_state.player
+    years_played = st.session_state.season / 4.0
+    start_val = 5500 
+    end_val = player.valuation
+    if end_val <= 0: cagr = -1.0 
+    else: cagr = (end_val / start_val) ** (1 / max(years_played, 0.25)) - 1
+    
+    if not is_win: grade = "F"
+    elif cagr > 0.25: grade = "A+"
+    elif cagr > 0.15: grade = "A"
+    elif cagr > 0.10: grade = "B"
+    elif cagr > 0.05: grade = "C"
+    else: grade = "D"
+
+    st.markdown("### 📋 The Board's Review")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Final Valuation", f"${end_val:,.0f}")
+    col2.metric("Tenure", f"{years_played:.1f} Years")
+    col3.metric("CAGR (Return)", f"{cagr:.1%}")
+    col4.metric("CEO Grade", grade)
+    
+    if len(st.session_state.history) > 0:
+        st.markdown("### 📈 Shareholder Value History")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['PlayerCash'], name='Your Cash', line=dict(color='green', width=3)))
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['TycoonCash'], name='Tycoon Cash', line=dict(color='red', width=2)))
+        st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+    if st.button("🔄 Start New Career", type="primary"):
+        init_game()
+        st.rerun()
+
+# --- POPUP DIALOG (Reports) ---
 @st.dialog("Quarterly Report", width="large")
 def show_season_summary_dialog():
     player = st.session_state.player
     log = player.last_turn_log
+    net_borrowing = st.session_state.last_net_borrowing
     
     st.subheader(f"Season {st.session_state.season - 1} Performance")
     
+    # Event Banner
     evt_label = f"**MARKET EVENT:** {log['Event_Name']} ({log['Event_Desc']})"
     if log['Event_Bad']: st.error(evt_label)
     else: st.success(evt_label)
 
-    # Volume Stats
+    # 1. VOLUME STATS
     st.caption("📦 OPERATIONS (VOLUME)")
     v1, v2, v3, v4 = st.columns(4)
     v1.metric("Produced", f"{int(log.get('Prod', 0))}", help="New birds hatched")
     v2.metric("Sold", f"{int(log['Sales'])}", help="Birds sold")
-    net_stock = int(log.get('Prod', 0)) - int(log['Sales'])
-    v3.metric("Net Frozen", f"{net_stock:+}", help="Freezer change")
+    net_inv = int(log.get('Net_Inv_Change', 0))
+    v3.metric("Net Frozen", f"{net_inv:+}", help="Change in inventory")
     v4.metric("Closing Inv.", f"{int(player.inventory)}")
 
     st.divider()
 
-    # P&L
-    st.caption("💰 PROFIT & LOSS")
+    # 2. INCOME STATEMENT (P&L)
+    st.markdown("### 📉 Income Statement")
     
     c1, c2 = st.columns([3, 1])
     c1.write("➕ **Revenue** (Sales x Price)")
@@ -237,32 +305,31 @@ def show_season_summary_dialog():
     c2.write(f":red[-${log['OpEx']:,.0f}]")
 
     c1, c2 = st.columns([3, 1])
-    c1.write(f"➖ Fixed Costs (Overhead)")
-    c2.write(f":red[-${log['FixedCost']:,.0f}]")
+    c1.write(f"➖ Fixed Costs & Interest")
+    overhead = log['FixedCost'] + log.get('Interest', 0)
+    c2.write(f":red[-${overhead:,.0f}]")
     
-    if log.get('Interest', 0) > 0:
+    if log['Storage'] + log['Fine'] > 0:
         c1, c2 = st.columns([3, 1])
-        c1.write("➖ **Debt Interest**")
-        c2.write(f":red[-${log['Interest']:,.0f}]")
-    
-    if log['Storage'] > 0:
-        c1, c2 = st.columns([3, 1])
-        c1.write("➖ Freezer Costs")
-        c2.write(f":red[-${log['Storage']:,.0f}]")
-        
-    if log['Fine'] > 0:
-        c1, c2 = st.columns([3, 1])
-        c1.write("➖ **REGULATORY FINE**")
-        c2.write(f":red[-${log['Fine']:,.0f}]")
+        c1.write("➖ Storage & Fines")
+        c2.write(f":red[-${(log['Storage'] + log['Fine']):,.0f}]")
 
-    st.divider()
-    
     c1, c2 = st.columns([3, 1])
-    c1.markdown("### 🟰 Net Profit")
+    c1.markdown("**🟰 Net Profit (Loss)**")
     color = "green" if log['Profit'] > 0 else "red"
     c2.markdown(f":{color}[**${log['Profit']:,.0f}**]")
+
+    st.divider()
+
+    # 3. CASH FLOW STATEMENT
+    st.markdown("### 💵 Cash Flow Statement")
+    start_cash = player.cash - log['Profit'] - net_borrowing
     
-    st.caption(f"Clearing Price: ${log['Price']:.2f}")
+    cf1, cf2, cf3, cf4 = st.columns(4)
+    cf1.metric("Start Cash", f"${start_cash:,.0f}")
+    cf2.metric("Operations", f"${log['Profit']:+,.0f}", help="Net Profit")
+    cf3.metric("Financing", f"${net_borrowing:+,.0f}", help="Net Loans Taken/Repaid")
+    cf4.metric("End Cash", f"${player.cash:,.0f}")
 
     if player.cash < 0:
         st.error("🚨 **INSOLVENCY NOTICE:** Cash balance negative. Assets seized.")
@@ -276,22 +343,34 @@ def show_season_summary_dialog():
             st.session_state.show_summary = False
             st.rerun()
 
+# --- HELPER ACTIONS ---
+def instant_borrow(amount):
+    player = st.session_state.player
+    # Cap check
+    assets = player.get_asset_value()
+    max_debt = assets * MAX_LTV
+    if (player.debt + amount) > max_debt:
+        return # Denied
+    player.debt += amount
+    player.cash += amount
+    st.session_state.last_net_borrowing += amount
+
+def instant_repay(amount):
+    player = st.session_state.player
+    actual = min(amount, player.cash, player.debt)
+    player.debt -= actual
+    player.cash -= actual
+    st.session_state.last_net_borrowing -= actual
+
 # --- GAME ENGINE ---
-def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borrow_req, player_repay_req):
+def execute_turn(player_capacity, player_sell_pct, player_build_req):
     player = st.session_state.player
     opponents = st.session_state.opponents
     
+    # Reset Per-Turn Logs
+    st.session_state.last_net_borrowing = 0 
     player.spent_last_turn = 0
     for ai in opponents: ai.spent_last_turn = 0
-    
-    # 0. FINANCING
-    if player_borrow_req > 0:
-        player.debt += player_borrow_req
-        player.cash += player_borrow_req
-    if player_repay_req > 0:
-        repay_amt = min(player_repay_req, player.cash, player.debt)
-        player.debt -= repay_amt
-        player.cash -= repay_amt
     
     # 1. Construction
     if player_build_req and player.cash >= SHED_COST:
@@ -314,16 +393,13 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
     # AI Actions
     for ai in opponents:
         if ai.bankrupt: continue
-        
         build, card_idx, cap_pct, sell_pct = get_ai_decision(ai, player, st.session_state.market_cards)
         ai.temp_capacity = cap_pct
         ai.temp_sell_pct = sell_pct
-        
         if build:
             ai.cash -= SHED_COST
             ai.sheds += 1
             ai.spent_last_turn += SHED_COST
-            
         if card_idx is not None:
             if st.session_state.market_cards[card_idx] is not None:
                 card = st.session_state.market_cards[card_idx]
@@ -333,11 +409,9 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
                     ai.spent_last_turn += card['cost']
                     st.session_state.market_cards[card_idx] = None 
     
-    # --- SUPPLY & DEMAND ---
-    
+    # --- MARKET ENGINE ---
     evt_name = st.session_state.next_event_name
     evt_data = EVENTS[evt_name]
-    
     current_demand = BASE_DEMAND * evt_data['demand_mod']
     total_supply_produced = 0
     
@@ -345,7 +419,6 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
     
     for farm in all_farms:
         if farm.bankrupt: continue
-        
         if farm.is_player: cap = player_capacity
         else: cap = farm.temp_capacity
             
@@ -355,9 +428,9 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
         fine = 0.0
         if cap > 1.0:
             chance = (cap - 1.0) * FINE_CHANCE_SCALER
-            if random.random() < chance:
-                fine = REGULATORY_FINE
+            if random.random() < chance: fine = REGULATORY_FINE
         
+        farm.temp_prod = raw_prod # Save for log
         farm.inventory += raw_prod
         
         if farm.is_player: sales_vol = farm.inventory * player_sell_pct
@@ -367,7 +440,7 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
         farm.temp_fine = fine
         total_supply_produced += sales_vol
 
-    # Price
+    # Price Discovery
     safe_supply = max(500, total_supply_produced)
     market_price = (current_demand / safe_supply) * 4.0 
     market_price = max(0.50, market_price)
@@ -381,13 +454,15 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
         revenue = farm.temp_sales * market_price
         farm.inventory -= farm.temp_sales
         
-        if farm.is_player: cap = player_capacity
-        else: cap = farm.temp_capacity
+        net_inv_change = farm.temp_prod - farm.temp_sales # Fix "Net Frozen" bug
         
+        # Expenses
         prod_bonus = sum(c.get('prod_bonus', 0) for c in farm.cards)
+        # Recalc cap for accurate OpEx
+        cap = player_capacity if farm.is_player else farm.temp_capacity
         produced_this_turn = farm.sheds * (BASE_PROD + prod_bonus) * cap
-        opex = produced_this_turn * farm.breakeven_price
         
+        opex = produced_this_turn * farm.breakeven_price
         fixed_cost = farm.sheds * FIXED_COST_PER_SHED
         interest = farm.debt * farm.get_interest_rate()
         
@@ -402,7 +477,7 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
             "Rev": revenue, "OpEx": opex, "FixedCost": fixed_cost, 
             "Interest": interest, "Fine": farm.temp_fine, "Storage": storage_fees,
             "Profit": profit, "Price": market_price, "Sales": farm.temp_sales,
-            "Prod": raw_prod,
+            "Prod": farm.temp_prod, "Net_Inv_Change": net_inv_change,
             "Event_Name": evt_name, "Event_Desc": evt_data['desc'], "Event_Bad": evt_data['bad']
         }
         
@@ -412,7 +487,7 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
         farm.update_valuation()
         if farm.cash < 0: farm.bankrupt = True
 
-    # Cleanup
+    # Cleanup & Game Over Checks
     for i in range(4):
         if st.session_state.market_cards[i] is None:
             st.session_state.market_cards[i] = random.choice(CARDS_DB)
@@ -425,42 +500,40 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req, player_borr
     new_hist = {"Season": st.session_state.season-1, "Price": market_price, "PlayerCash": player.cash, "TycoonCash": tycoon.cash}
     st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([new_hist])], ignore_index=True)
 
-    # --- GAME OVER CHECKS ---
-    
-    # 1. Did the Tycoon go bankrupt this turn?
     if opponents[2].bankrupt:
         st.session_state.game_active = False
-        st.session_state.game_over_msg = "🏆 VICTORY! The Tycoon has gone bankrupt. You are the last player standing!"
-        return # Stop execution
-
-    # 2. Did we hit the Season Limit?
+        st.session_state.game_over_msg = "🏆 VICTORY! The Tycoon has gone bankrupt. You are the King of the Roost!"
+        
     if st.session_state.season > 40:
         st.session_state.game_active = False
-        st.session_state.game_over_msg = "💀 GAME OVER: Time is up. Apex Global acquired The Tycoon because he was still solvent."
+        st.session_state.game_over_msg = "💀 GAME OVER: Time is up. Apex Global acquired The Tycoon."
 
 def attempt_buyout(ai_index):
     player = st.session_state.player
     target = st.session_state.opponents[ai_index]
-    cost = target.valuation * 1.3 
+    
+    # UPDATED M&A LOGIC
+    # Standard: 1.1x (Down from 1.3x)
+    multiplier = 1.1 
+    # Distressed Discount: If cash < $500, pay 0.8x
+    if target.cash < 500: multiplier = 0.8
+        
+    cost = target.valuation * multiplier 
     
     if player.cash >= cost:
-        # 1. Execute the transaction
         player.cash -= cost
         player.sheds += target.sheds
         for c in target.cards: 
             if len(player.cards) < 4:
                 player.add_card(c)
-        
-        # 2. Kill the target
         target.bankrupt = True
         target.name = f"Owned by {player.name}"
         target.sheds = 0
         target.cash = 0
         
-        # 3. WIN CONDITION CHECK
-        if ai_index == 2: # Index 2 is ALWAYS The Tycoon
+        if ai_index == 2: # Tycoon Index
             st.session_state.game_active = False
-            st.session_state.game_over_msg = "🏆 VICTORY! You have acquired The Tycoon and monopolized the market. Apex Global signs the check to YOU."
+            st.session_state.game_over_msg = "🏆 VICTORY! You acquired The Tycoon. Complete Monopoly achieved."
             st.rerun()
             
         st.success(f"Acquired {target.name}!")
@@ -474,168 +547,16 @@ def scrap_asset(idx):
     st.session_state.player.scrap_card(idx)
     st.rerun()
 
-# --- NEW ANALYST FUNCTIONS ---
-def render_analyst_dashboard():
-    st.subheader("📊 CFO Office (Financial Analysis)")
-    
-    tab_prod, tab_ma, tab_stress = st.tabs(["⚡ Overclock EV", "🤝 M&A Model", "🔥 Stress Test"])
-    
-    # 1. PRODUCTION RISK CALCULATOR
-    with tab_prod:
-        st.markdown("**Production Risk Calculator**")
-        st.caption("Calculate Expected Value (EV) of pushing production > 100%.")
-        
-        intensity = st.slider("Target Intensity", 100, 120, 110)
-        
-        # Math
-        player = st.session_state.player
-        base_vol = player.sheds * BASE_PROD 
-        extra_vol = base_vol * ((intensity - 100) / 100)
-        
-        # Assumptions
-        assumed_price = 4.00
-        fine_prob = (intensity / 100.0 - 1.0) * FINE_CHANCE_SCALER
-        fine_amt = REGULATORY_FINE
-        
-        gain = extra_vol * assumed_price
-        expected_fine = fine_amt * fine_prob
-        net_ev = gain - expected_fine
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Marginal Revenue", f"${gain:.0f}")
-        c2.metric("Expected Fine", f"${expected_fine:.0f}", help=f"Probability: {fine_prob*100:.1f}%")
-        c3.metric("Net EV", f"${net_ev:.0f}", delta_color="normal" if net_ev > 0 else "inverse")
-        
-        if net_ev > 0: st.success("Recommendation: **APPROVE** (Positive Expectancy)")
-        else: st.error("Recommendation: **REJECT** (Negative Expectancy)")
-
-    # 2. M&A MODEL
-    with tab_ma:
-        st.markdown("**LBO / Synergy Modeler**")
-        target_names = [ai.name for ai in st.session_state.opponents if not ai.bankrupt]
-        
-        if not target_names:
-            st.info("No active competitors.")
-        else:
-            target_name = st.selectbox("Select Target", target_names)
-            target = next(ai for ai in st.session_state.opponents if ai.name == target_name)
-            player = st.session_state.player
-            
-            # Synergy Math
-            # 1. We apply PLAYER efficiency to TARGET sheds
-            syn_opex_savings = (target.breakeven_price - player.breakeven_price) * (target.sheds * BASE_PROD)
-            syn_annual = syn_opex_savings * 4 # 4 seasons
-            
-            buy_price = target.valuation * 1.3
-            
-            c1, c2 = st.columns(2)
-            c1.metric("Acquisition Cost", f"${buy_price:,.0f}")
-            c2.metric("Sheds Acquired", f"{target.sheds}")
-            
-            st.divider()
-            
-            if syn_opex_savings > 0:
-                st.metric("Synergy (OpEx Savings/Turn)", f"${syn_opex_savings:.0f}", delta="Synergy")
-                payback = buy_price / (syn_opex_savings + (target.sheds * 100)) # Approx profit
-                st.caption(f"Est. Payback Period: **{payback:.1f} Seasons**")
-            else:
-                st.warning("No operational synergies available (You are less efficient than them).")
-
-    # 3. STRESS TEST
-    with tab_stress:
-        st.markdown("**Cash Flow Stress Test**")
-        scenario = st.selectbox("Scenario", ["Recession (-30% Demand)", "Health Scare (-40% Demand)"])
-        
-        drop = 0.30 if "Recession" in scenario else 0.40
-        player = st.session_state.player
-        
-        # Burn Rate Calc
-        fixed = player.sheds * FIXED_COST_PER_SHED
-        interest = player.debt * player.get_interest_rate()
-        
-        # Revenue Shock
-        last_rev = player.last_turn_log.get('Rev', 2000)
-        shocked_rev = last_rev * (1.0 - drop)
-        
-        net_cash_flow = shocked_rev - fixed - interest - player.last_turn_log.get('OpEx', 1000)
-        
-        st.metric("Proj. Cash Flow (Shocked)", f"${net_cash_flow:,.0f}")
-        
-        if player.cash + net_cash_flow < 0:
-            st.error("🚨 **FAIL:** This scenario would bankrupt you.")
-        else:
-            st.success("✅ **PASS:** You have enough liquidity to survive.")
-
-# --- END GAME REPORT ---
-def draw_end_game_report():
-    st.divider()
-    
-    # 1. Determine Outcome
-    msg = st.session_state.game_over_msg
-    is_win = "VICTORY" in msg
-    
-    if is_win:
-        st.success(f"# 🏆 MISSION ACCOMPLISHED")
-        st.markdown(f"### {msg}")
-        st.balloons()
-    else:
-        st.error(f"# 💀 TERMINATED")
-        st.markdown(f"### {msg}")
-
-    # 2. Calculate Metrics
-    player = st.session_state.player
-    years_played = st.session_state.season / 4.0
-    
-    # Start Value: $2.5k Cash + 3 Sheds ($3k) = $5,500
-    start_val = 5500 
-    end_val = player.valuation
-    
-    # CAGR Formula: (End/Start)^(1/Years) - 1
-    if end_val <= 0: cagr = -1.0 # Total loss
-    else: cagr = (end_val / start_val) ** (1 / max(years_played, 0.25)) - 1
-    
-    # Grade Logic
-    if not is_win: grade = "F"
-    elif cagr > 0.25: grade = "A+"
-    elif cagr > 0.15: grade = "A"
-    elif cagr > 0.10: grade = "B"
-    elif cagr > 0.05: grade = "C"
-    else: grade = "D"
-
-    # 3. The Report Card
-    st.markdown("### 📋 The Board's Review")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Final Valuation", f"${end_val:,.0f}")
-    col2.metric("Tenure", f"{years_played:.1f} Years")
-    col3.metric("CAGR (Return)", f"{cagr:.1%}")
-    col4.metric("CEO Grade", grade)
-    
-    # 4. Final Chart
-    if len(st.session_state.history) > 0:
-        st.markdown("### 📈 Shareholder Value History")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['PlayerCash'], name='Your Cash', line=dict(color='green', width=3)))
-        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['TycoonCash'], name='Tycoon Cash', line=dict(color='red', width=2)))
-        st.plotly_chart(fig, use_container_width=True)
-    
-    st.divider()
-    if st.button("🔄 Start New Career", type="primary"):
-        init_game()
-        st.rerun()
-
 # --- UI RENDERER ---
 def main():
     if not st.session_state.game_active:
         st.title("King of the Roost")
         st.caption("Supply, Demand, and Hostile Takeovers")
         
-        # CHECK: Did we just finish a game?
         if st.session_state.game_over_msg:
             draw_end_game_report()
-            return # Stop here to show only the report
+            return 
 
-        # --- STANDARD LANDING PAGE ---
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("The Situation")
@@ -650,9 +571,7 @@ def main():
             
             🎯 **OBJECTIVE:** Bankrupt or Acquire all 3 competitors (especially The Tycoon) before Season 40.
             """)
-            
             st.error("💀 **WARNING:** If your Cash hits $0, you are liquidated immediately.")
-            
             if st.button("Open Trading Desk", type="primary"):
                 init_game()
                 st.rerun()
@@ -661,27 +580,23 @@ def main():
             st.subheader("Rules of Engagement")
             st.markdown("""
             **1. Production & Inventory**
-            Produce chickens and sell them on the market.
             * **Sell:** Cash in immediately at the current market price.
-            * **Freeze:** Store inventory in the freezer to sell later (hoping for a price spike).
+            * **Freeze:** Store inventory to sell later (hoping for a price spike).
             
             **2. Supply & Demand**
-            The market price is determined by **Total Supply** (You + Competitors).
+            The market price is determined by **Total Supply**.
             * **Flood the Market:** Price crashes.
             * **Withhold Supply:** Price rises.
             
-            **3. The Cost Curve (Strategy)**
-            * *Hint:* If you reduce your price of production below the Tycoon, you can **flood the market** to drive the price below *their* operating costs.
-            * **Result:** You profit; The Tycoon bleeds cash on every bird sold.
+            **3. M&A Strategy (The Growth Hack)**
+            * **Hint:** Building sheds is often cheaper than buying them, unless the rival is distressed (low cash) or you have massive synergy.
             
             **4. Corporate Debt (Leverage)**
-            * You can borrow cash to fund expansion.
             * **Interest Rates:** 5% (Safe) -> 9% (Risky) -> 15% (Junk).
-            * **Warning:** High interest will drain your cash flow during a recession.
+            * **Warning:** Banks cap lending at **70% LTV**. Don't over-leverage!
             
             **5. Insider Intel**
-            * If you spend **LESS** money than the Tycoon in a turn (saving cash), you gain **Insider Intel**.
-            * This reveals the next season's Demand Forecast *before* you act.
+            * Spend **LESS** than the Tycoon to gain **Insider Intel** on next season's Demand Forecast.
             """)
         return
 
@@ -693,170 +608,200 @@ def main():
             show_season_summary_dialog()
         return
 
-    # --- MAIN DASHBOARD (TABS) ---
+    # --- MAIN DASHBOARD ---
     player = st.session_state.player
     tycoon = st.session_state.opponents[2]
     
-    # Header Metrics
+    # 1. HEADER
     prod_bonus = sum(c.get('prod_bonus', 0) for c in player.cards)
     max_capacity = player.sheds * (BASE_PROD + prod_bonus)
     
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Season", f"{st.session_state.season}/40")
     m2.metric("Cash", f"${player.cash:,.0f}")
-    m3.metric("Debt", f"${player.debt:,.0f}", help="Principal Owed")
+    m3.metric("Debt", f"${player.debt:,.0f}")
     m4.metric("Sheds", f"{player.sheds}")
     m5.metric("Max Capacity", f"{max_capacity:,.0f}")
     
     st.markdown("---")
 
-    # --- TABS IMPLEMENTATION ---
-    main_tab, analyst_tab = st.tabs(["📉 Trading Floor", "📊 CFO Office (Analyst)"])
-    
-    with analyst_tab:
-        render_analyst_dashboard()
+    left_col, right_col = st.columns([1, 1])
+
+    with left_col:
+        st.subheader("⚙️ Finance & Operations")
         
-    with main_tab:
-        left_col, right_col = st.columns([1, 1])
-
-        with left_col:
-            st.subheader("⚙️ Finance & Operations")
+        # FINANCE DEPARTMENT (Instant Updates)
+        with st.expander("🏦 Corporate Finance (Debt Facility)", expanded=True):
+            ltv = player.get_ltv()
+            curr_rate = player.get_interest_rate()
             
-            with st.expander("🏦 Corporate Finance (Debt Facility)", expanded=True):
-                curr_rate = player.get_interest_rate()
-                st.caption(f"Current Interest Rate: **{curr_rate*100:.1f}%** (Based on Loan-to-Value)")
+            # Credit Rating UI
+            rating_color = "green"
+            if curr_rate > 0.09: rating_color = "red"
+            elif curr_rate > 0.05: rating_color = "orange"
+            
+            st.markdown(f"**Credit Rating:** :{rating_color}[{curr_rate*100:.0f}% Interest] (LTV: {ltv:.1%})")
+            st.progress(min(ltv, 1.0))
+            if ltv >= MAX_LTV: st.error("⛔ CREDIT LIMIT REACHED")
+
+            fc1, fc2 = st.columns(2)
+            # Instant Borrow Button
+            if fc1.button("Borrow $1,000"):
+                instant_borrow(1000)
+                st.rerun()
                 
-                fc1, fc2 = st.columns(2)
-                borrow_amt = fc1.number_input("Borrow ($)", min_value=0, step=1000, key="borrow")
-                repay_amt = fc2.number_input("Repay ($)", min_value=0, max_value=int(player.debt), step=1000, key="repay")
-                
-                if borrow_amt > 0: st.caption(f"New Loan: +${borrow_amt}")
-                if repay_amt > 0: st.caption(f"Repayment: -${repay_amt}")
-
-            st.divider()
-            
-            st.caption(f"Current Unit Cost: **${player.breakeven_price:.2f} / bird**")
-            cost_diff = tycoon.breakeven_price - player.breakeven_price
-            
-            if cost_diff > 0.001:
-                st.success(f"✅ **Efficiency Advantage:** You are ${cost_diff:.2f} cheaper than Tycoon.")
-            elif cost_diff < -0.001:
-                st.error(f"⚠️ **Efficiency Warning:** Tycoon produces cheaper than you (Diff: ${abs(cost_diff):.2f}).")
-            else:
-                st.info(f"⚖️ **Cost Parity:** You match the Tycoon's efficiency.")
-                
-            st.write("**Production Intensity**")
-            capacity_int = st.slider("Intensity %", 0, 120, 100)
-            capacity = capacity_int / 100.0
-            
-            if capacity_int == 0: st.caption(f"🛑 Mothballed (${player.sheds*FIXED_COST_PER_SHED} Fixed Cost)")
-            elif capacity_int > 100: 
-                risk = int((capacity - 1.0) * FINE_CHANCE_SCALER * 100)
-                st.warning(f"🔥 Overclocked ({risk}% Fine Risk)")
-            
-            st.write("**Sales Strategy**")
-            sell_int = st.slider("Sell %", 0, 100, 100)
-            sell_pct = sell_int / 100.0
-            if sell_int < 100: st.caption(f"❄️ Storing {100-sell_int}%")
-
-            st.divider()
-            st.subheader("🛒 Market")
-            
-            can_build = player.cash >= SHED_COST
-            build_btn = st.checkbox(f"Build Shed (${SHED_COST}) - Adds {BASE_PROD} Chickens", disabled=not can_build)
-            
-            inventory_full = len(player.cards) >= 4
-            if inventory_full: st.error("Inventory Full (4/4). Scrap to buy.")
-            
-            c1, c2 = st.columns(2)
-            for i, card in enumerate(st.session_state.market_cards):
-                col = c1 if i % 2 == 0 else c2 
-                if card:
-                    with col.container(border=True):
-                        is_selected = (st.session_state.pending_card == i)
-                        
-                        if is_selected: st.markdown(f"**:red[{card['icon']} {card['name']}]**")
-                        else: st.markdown(f"**{card['icon']} {card['name']}**")
-                        
-                        st.caption(card['desc'])
-                        st.write(f"**${card['cost']}**")
-                        
-                        btn_label = "DESELECT" if is_selected else "BUY"
-                        disable = (inventory_full and not is_selected) or (player.cash < card['cost'])
-                        
-                        if st.button(btn_label, key=f"c_{i}", disabled=disable):
-                            select_card(i)
-                            st.rerun()
-                else:
-                    col.info("Sold")
-
-            st.markdown("###")
-            if st.button("🔴 RUN SEASON", type="primary", use_container_width=True):
-                execute_turn(capacity, sell_pct, build_btn, borrow_amt, repay_amt)
+            # Instant Repay Button
+            if fc2.button("Repay $1,000"):
+                instant_repay(1000)
                 st.rerun()
 
-        with right_col:
-            st.subheader("📡 Market Intel")
+        st.divider()
+        
+        st.caption(f"Current Unit Cost: **${player.breakeven_price:.2f} / bird**")
+        cost_diff = tycoon.breakeven_price - player.breakeven_price
+        
+        if cost_diff > 0.001:
+            st.success(f"✅ **Efficiency Advantage:** You are ${cost_diff:.2f} cheaper than Tycoon.")
+        elif cost_diff < -0.001:
+            st.error(f"⚠️ **Efficiency Warning:** Tycoon produces cheaper than you (Diff: ${abs(cost_diff):.2f}).")
+        else:
+            st.info(f"⚖️ **Cost Parity:** You match the Tycoon's efficiency.")
             
-            has_intel = (st.session_state.season > 1) and (player.spent_last_turn < tycoon.spent_last_turn)
-            next_evt = st.session_state.next_event_name
+        st.write("**Production Intensity**")
+        capacity_int = st.slider("Intensity %", 0, 120, 100)
+        capacity = capacity_int / 100.0
+        
+        if capacity_int == 0: st.caption(f"🛑 Mothballed (${player.sheds*FIXED_COST_PER_SHED} Fixed Cost)")
+        elif capacity_int > 100: 
+            risk = int((capacity - 1.0) * FINE_CHANCE_SCALER * 100)
+            st.warning(f"🔥 Overclocked ({risk}% Fine Risk)")
+        
+        st.write("**Sales Strategy**")
+        sell_int = st.slider("Sell %", 0, 100, 100)
+        sell_pct = sell_int / 100.0
+        if sell_int < 100: st.caption(f"❄️ Storing {100-sell_int}%")
+
+        # ANALYST TOOLS
+        with st.expander("📊 Financial Analyst Tools"):
+            st.write("**Marginal Revenue Calculator**")
+            last_p = player.last_turn_log.get('Price', 4.00)
+            st.caption(f"Est. Revenue @ ${last_p:.2f} (Last Season Price)")
+            est_vol = max_capacity * capacity * sell_pct
+            st.write(f"Volume: {est_vol:.0f} | Revenue: **${est_vol * last_p:,.0f}**")
             
-            last_price = player.last_turn_log.get('Price', 4.00)
-            st.caption(f"Last Season Clearing Price: **${last_price:.2f}**")
-            
-            with st.container(border=True):
-                if has_intel:
-                    evt_bad = EVENTS[next_evt]['bad']
-                    icon = "📉" if evt_bad else "📈"
-                    st.markdown(f"**Forecast:** {icon} {next_evt}")
+            st.divider()
+            st.write("**Stress Test (Recession Sim)**")
+            stress_prod = st.slider("Test Production %", 0, 120, 100, key="stress_slider") / 100.0
+            stress_vol = max_capacity * stress_prod
+            stress_rev = stress_vol * 2.00 # $2.00 crash price
+            stress_cost = (stress_vol * player.breakeven_price) + (player.sheds * FIXED_COST_PER_SHED) + (player.debt * curr_rate)
+            net_stress = stress_rev - stress_cost
+            if net_stress < 0: st.error(f"Burn: -${abs(net_stress):,.0f} / turn")
+            else: st.success(f"Survive: +${net_stress:,.0f} / turn")
+
+        st.divider()
+        st.subheader("🛒 Market")
+        
+        can_build = player.cash >= SHED_COST
+        build_btn = st.checkbox(f"Build Shed (${SHED_COST}) - Adds {BASE_PROD} Chickens", disabled=not can_build)
+        
+        inventory_full = len(player.cards) >= 4
+        if inventory_full: st.error("Inventory Full (4/4). Scrap to buy.")
+        
+        c1, c2 = st.columns(2)
+        for i, card in enumerate(st.session_state.market_cards):
+            col = c1 if i % 2 == 0 else c2 
+            if card:
+                with col.container(border=True):
+                    is_selected = (st.session_state.pending_card == i)
                     
-                    demand_impact = int((EVENTS[next_evt]['demand_mod'] - 1.0) * 100)
-                    if demand_impact > 0: st.caption(f"Demand Impact: +{demand_impact}%")
-                    else: st.caption(f"Demand Impact: {demand_impact}%")
+                    if is_selected: st.markdown(f"**:red[{card['icon']} {card['name']}]**")
+                    else: st.markdown(f"**{card['icon']} {card['name']}**")
                     
-                    last_supply = st.session_state.get('last_total_supply', 2000)
-                    proj_demand = BASE_DEMAND * EVENTS[next_evt]['demand_mod']
-                    proj_price = (proj_demand / last_supply) * 4.0
-                    st.metric("Proj. Price", f"${proj_price:.2f}", help="Estimated price if supply stays flat")
-                else:
-                    st.markdown("**Forecast:** ???")
-                    st.caption("Save cash to unlock intel.")
-            
-            st.subheader("🎯 Competitors")
-            for i, ai in enumerate(st.session_state.opponents):
-                if not ai.bankrupt:
-                    with st.container(border=True):
-                        c_head, c_btn = st.columns([2, 1])
-                        c_head.markdown(f"**{ai.name}**")
-                        
-                        buyout_cost = ai.valuation * 1.3
-                        if c_btn.button(f"Buy (${buyout_cost:,.0f})", key=f"acq_{i}", disabled=player.cash < buyout_cost):
-                            attempt_buyout(i)
-                        
-                        # SYNERGY DISPLAY
-                        their_margin = 4.00 - ai.breakeven_price
-                        your_margin = 4.00 - player.breakeven_price
-                        delta = (your_margin - their_margin) * 80 
-                        
-                        if delta > 0:
-                            st.caption(f"⚡ **Synergy:** You'd make +${delta:.0f}/shed more than them.")
-                        
-                        s1, s2, s3 = st.columns(3)
-                        s1.caption(f"🏰 {ai.sheds}")
-                        s2.caption(f"💰 ${ai.cash:,.0f}")
-                        s3.caption(f"📉 ${ai.breakeven_price:.2f}")
+                    st.caption(card['desc'])
+                    st.write(f"**${card['cost']}**")
+                    
+                    btn_label = "DESELECT" if is_selected else "BUY"
+                    disable = (inventory_full and not is_selected) or (player.cash < card['cost'])
+                    
+                    if st.button(btn_label, key=f"c_{i}", disabled=disable):
+                        select_card(i)
+                        st.rerun()
+            else:
+                col.info("Sold")
 
-                else:
-                    st.caption(f"❌ {ai.name} (Eliminated)")
+        st.markdown("###")
+        if st.button("🔴 RUN SEASON", type="primary", use_container_width=True):
+            execute_turn(capacity, sell_pct, build_btn)
+            st.rerun()
 
-            if player.cards:
-                st.divider()
-                st.caption("Your Upgrades (Click to Scrap)")
-                for i, c in enumerate(player.cards):
-                    if st.button(f"🗑️ {c['name']} ({c['desc']})", key=f"scrap_{i}"):
-                        scrap_asset(i)
+    with right_col:
+        st.subheader("📡 Market Intel")
+        
+        has_intel = (st.session_state.season > 1) and (player.spent_last_turn < tycoon.spent_last_turn)
+        next_evt = st.session_state.next_event_name
+        
+        last_price = player.last_turn_log.get('Price', 4.00)
+        st.caption(f"Last Season Clearing Price: **${last_price:.2f}**")
+        
+        with st.container(border=True):
+            if has_intel:
+                evt_bad = EVENTS[next_evt]['bad']
+                icon = "📉" if evt_bad else "📈"
+                st.markdown(f"**Forecast:** {icon} {next_evt}")
+                
+                demand_impact = int((EVENTS[next_evt]['demand_mod'] - 1.0) * 100)
+                if demand_impact > 0: st.caption(f"Demand Impact: +{demand_impact}%")
+                else: st.caption(f"Demand Impact: {demand_impact}%")
+                
+                last_supply = st.session_state.get('last_total_supply', 2000)
+                proj_demand = BASE_DEMAND * EVENTS[next_evt]['demand_mod']
+                proj_price = (proj_demand / last_supply) * 4.0
+                st.metric("Proj. Price", f"${proj_price:.2f}", help="Estimated price if supply stays flat")
+            else:
+                st.markdown("**Forecast:** ???")
+                st.caption("Save cash to unlock intel.")
+        
+        st.subheader("🎯 Competitors")
+        for i, ai in enumerate(st.session_state.opponents):
+            if not ai.bankrupt:
+                with st.container(border=True):
+                    c_head, c_btn = st.columns([2, 1])
+                    c_head.markdown(f"**{ai.name}**")
+                    
+                    # Valuation Logic
+                    multiplier = 1.1
+                    if ai.cash < 500: multiplier = 0.8 # Distressed Discount
+                    buyout_cost = ai.valuation * multiplier
+                    
+                    if c_btn.button(f"Buy (${buyout_cost:,.0f})", key=f"acq_{i}", disabled=player.cash < buyout_cost):
+                        attempt_buyout(i)
+                    
+                    if ai.cash < 500: st.caption(":red[⚠️ DISTRESSED ASSET (20% OFF)]")
 
-    # Chart
+                    # Synergy Logic
+                    their_margin = 4.00 - ai.breakeven_price
+                    your_margin = 4.00 - player.breakeven_price
+                    delta = (your_margin - their_margin) * 80 
+                    
+                    if delta > 0:
+                        st.caption(f"⚡ **Operational Synergy:** +${delta:.0f}/shed profit vs current management.")
+                    
+                    s1, s2, s3 = st.columns(3)
+                    s1.caption(f"🏰 {ai.sheds}")
+                    s2.caption(f"💰 ${ai.cash:,.0f}")
+                    s3.caption(f"📉 ${ai.breakeven_price:.2f}")
+
+            else:
+                st.caption(f"❌ {ai.name} (Eliminated)")
+
+        if player.cards:
+            st.divider()
+            st.caption("Your Upgrades (Click to Scrap)")
+            for i, c in enumerate(player.cards):
+                if st.button(f"🗑️ {c['name']} ({c['desc']})", key=f"scrap_{i}"):
+                    scrap_asset(i)
+
     if len(st.session_state.history) > 1:
         st.divider()
         fig = go.Figure()
