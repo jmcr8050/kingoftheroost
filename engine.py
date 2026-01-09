@@ -19,7 +19,47 @@ def draw_event():
         return "Normal" 
     return st.session_state.event_deck.pop(0)
 
-def init_game():
+# --- QUANT / ANALYST LOGIC ---
+def update_quant_prediction():
+    player = st.session_state.player
+    quant_card = next((c for c in player.cards if c['name'] == "The Quant"), None)
+    
+    if not quant_card:
+        st.session_state.quant_prediction = None
+        return
+
+    # Calculate Tenure
+    hired_at = quant_card.get('hired_season', st.session_state.season)
+    tenure = st.session_state.season - hired_at
+    
+    # Determine Accuracy Tier
+    if tenure < 2:
+        accuracy = 0.50
+        status = "Rookie (50% Conf)"
+    elif tenure < 5:
+        accuracy = 0.80
+        status = "Junior (80% Conf)"
+    else:
+        accuracy = 1.0
+        status = "Senior (100% Conf)"
+
+    # The Roll (Deterministic for this turn)
+    true_event = st.session_state.next_event_name
+    
+    if random.random() < accuracy:
+        pred = true_event
+    else:
+        options = [e for e in config.EVENTS.keys() if e != true_event]
+        pred = random.choice(options)
+        
+    st.session_state.quant_prediction = {
+        "prediction": pred,
+        "status": status,
+        "is_correct": (pred == true_event)
+    }
+
+# --- INITIALIZATION WITH PROFILES ---
+def init_game(profile="founder"):
     st.session_state.game_active = True
     st.session_state.season = 1
     st.session_state.market_cards = random.sample(config.CARDS_DB, 4)
@@ -30,10 +70,52 @@ def init_game():
     st.session_state.event_deck = init_deck()
     st.session_state.next_event_name = draw_event()
     st.session_state.last_net_borrowing = 0
+    st.session_state.quant_prediction = None
     
-    st.session_state.player = Farm("You", config.SHED_START_COUNT, 2500.0, personality="Player", is_player=True)
+    # --- CEO LOADOUT LOGIC ---
+    cards = []
+    
+    if profile == "shark": # Raider
+        start_cash = 6000.0
+        start_sheds = 3
+        start_debt = 3500.0
+    elif profile == "farmer": # Farmer
+        start_cash = 200.0
+        start_sheds = 5
+        start_debt = 1500.0
+        c = next(c for c in config.CARDS_DB if c['name'] == "Master Breeder").copy()
+        cards = [c]
+    elif profile == "tech": # Disruptor
+        start_cash = 1000.0
+        start_sheds = 3
+        start_debt = 0.0
+        c1 = next(c for c in config.CARDS_DB if c['name'] == "Solar Grid").copy()
+        c2 = next(c for c in config.CARDS_DB if c['name'] == "Efficiency Expert").copy()
+        cards = [c1, c2]
+    elif profile == "insider": # Insider
+        start_cash = 1500.0
+        start_sheds = 3
+        start_debt = 0.0
+        c1 = next(c for c in config.CARDS_DB if c['name'] == "The Quant").copy()
+        # Set hired season to -1 so (1 - (-1)) = Tenure 2 (Junior)
+        c1['hired_season'] = -1 
+        cards = [c1]
+    else: # Founder
+        start_cash = 2500.0
+        start_sheds = 3
+        start_debt = 0.0
+        cards = []
+
+    st.session_state.player = Farm("You", start_sheds, start_cash, personality="Player", is_player=True)
+    st.session_state.player.debt = start_debt
+    st.session_state.player.cards = cards
+    st.session_state.player.recalculate_breakeven()
     st.session_state.player.update_valuation() 
     
+    if profile == "insider":
+        update_quant_prediction()
+    
+    # Init Opponents
     st.session_state.opponents = [
         Farm("Small Fry", 3, 2000.0, personality="Conservative"),
         Farm("The Upstart", 4, 3000.0, personality="Aggressive"),
@@ -47,6 +129,7 @@ def init_game():
     
     st.session_state.history = pd.DataFrame(columns=["Season", "Price", "PlayerCash", "TycoonCash"])
 
+# --- AI LOGIC ---
 def get_ai_decision(ai: Farm, player: Farm, market_cards):
     variance = random.uniform(0.9, 1.1) 
     wants_to_build = False
@@ -97,6 +180,7 @@ def get_ai_decision(ai: Farm, player: Farm, market_cards):
 
     return wants_to_build, card_idx, capacity, sell_pct
 
+# --- PLAYER ACTIONS ---
 def instant_borrow(amount):
     player = st.session_state.player
     assets = player.get_asset_value()
@@ -118,28 +202,64 @@ def attempt_buyout(ai_index):
     player = st.session_state.player
     target = st.session_state.opponents[ai_index]
     
+    # 1. Calculate Purchase Price (Equity Value)
     multiplier = 1.1 
-    if target.cash < 500: multiplier = 0.8
-    cost = target.valuation * multiplier 
+    if target.cash < 500: multiplier = 0.8 
+    equity_cost = max(1.0, target.valuation * multiplier)
     
-    if player.cash >= cost:
-        player.cash -= cost
-        player.sheds += target.sheds
-        for c in target.cards: 
-            if len(player.cards) < 4:
-                player.add_card(c)
-        target.bankrupt = True
-        target.name = f"Owned by {player.name}"
-        target.sheds = 0
-        target.cash = 0
-        
-        if ai_index == 2: 
-            st.session_state.game_active = False
-            st.session_state.game_over_msg = "🏆 VICTORY! You acquired The Tycoon. Complete Monopoly achieved."
-            st.rerun()
+    # 2. Check Feasibility
+    if player.cash < equity_cost:
+        st.error(f"Insufficient Cash. Need ${equity_cost:,.0f} (Equity Value).")
+        return
+
+    # 3. Bank Covenant (Pro Forma LTV)
+    combined_debt = player.debt + target.debt
+    pro_forma_cash = (player.cash - equity_cost) + target.cash
+    pro_forma_sheds = player.sheds + target.sheds
+    pro_forma_inv = player.inventory + target.inventory
+    
+    combined_assets = pro_forma_cash + (pro_forma_sheds * config.SHED_COST * 0.8) + (pro_forma_inv * 0.4)
+    pro_forma_ltv = combined_debt / combined_assets if combined_assets > 0 else 9.99
+    
+    if pro_forma_ltv > config.MAX_LTV:
+        st.error(f"⛔ DEAL BLOCKED BY BANK. Pro Forma LTV ({pro_forma_ltv:.1%}) exceeds 70%.")
+        return
+
+    # 4. EXECUTE DEAL
+    player.cash -= equity_cost
+    player.sheds += target.sheds
+    player.inventory += target.inventory
+    player.debt += target.debt # ASSUME DEBT
+    player.cash += target.cash
+    
+    for c in target.cards: 
+        if len(player.cards) < 4:
+            player.add_card(c)
             
-        st.success(f"Acquired {target.name}!")
+    target.bankrupt = True
+    target.name = f"Owned by {player.name}"
+    target.sheds = 0
+    target.cash = 0
+    target.debt = 0
+    
+    if ai_index == 2: 
+        st.session_state.game_active = False
+        st.session_state.game_over_msg = "🏆 VICTORY! You acquired The Tycoon. Monopoly achieved."
         st.rerun()
+        
+    st.success(f"Acquired {target.name}! Assumed ${target.debt:,.0f} debt.")
+    st.rerun()
+
+def perform_bailout():
+    player = st.session_state.player
+    deficit = abs(player.cash)
+    buffer = 500
+    total_rescue = deficit + buffer
+    player.cash += total_rescue
+    player.debt += total_rescue
+    player.credit_damaged = True
+    st.toast(f"Rescue Financing Secured. Rate locked at 15%.")
+    st.rerun()
 
 def select_card(idx):
     if st.session_state.pending_card == idx: st.session_state.pending_card = None
@@ -149,19 +269,24 @@ def scrap_asset(idx):
     st.session_state.player.scrap_card(idx)
     st.rerun()
 
+# --- MAIN TURN LOGIC ---
 def execute_turn(player_capacity, player_sell_pct, player_build_req):
     player = st.session_state.player
     opponents = st.session_state.opponents
+    profile = st.session_state.ceo_profile
     
     st.session_state.last_net_borrowing = 0 
     player.spent_last_turn = 0
     for ai in opponents: ai.spent_last_turn = 0
     
-    # 1. Construction
-    if player_build_req and player.cash >= config.SHED_COST:
-        player.cash -= config.SHED_COST
+    # 1. Construction (With Disruptor Penalty)
+    build_cost = config.SHED_COST
+    if profile == "tech": build_cost = 1500
+        
+    if player_build_req and player.cash >= build_cost:
+        player.cash -= build_cost
         player.sheds += 1
-        player.spent_last_turn += config.SHED_COST
+        player.spent_last_turn += build_cost
         
     # 2. Purchasing
     if st.session_state.pending_card is not None:
@@ -170,9 +295,13 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         if len(player.cards) < 4:
             if card and player.cash >= card['cost']:
                 player.cash -= card['cost']
+                if card['name'] == "The Quant":
+                    card['hired_season'] = st.session_state.season
                 player.add_card(card)
                 player.spent_last_turn += card['cost']
                 st.session_state.market_cards[c_idx] = None 
+                if card['name'] == "The Quant":
+                    update_quant_prediction()
     st.session_state.pending_card = None 
 
     # AI Actions
@@ -213,9 +342,13 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         fine = 0.0
         if cap > 1.0:
             chance = (cap - 1.0) * config.FINE_CHANCE_SCALER
-            if random.random() < chance: fine = config.REGULATORY_FINE
+            if random.random() < chance: 
+                base_fine = config.REGULATORY_FINE
+                # Insider Penalty
+                if farm.is_player and profile == "insider": base_fine = 1200
+                fine = base_fine
         
-        farm.temp_prod = raw_prod # Save for log
+        farm.temp_prod = raw_prod
         farm.inventory += raw_prod
         
         if farm.is_player: sales_vol = farm.inventory * player_sell_pct
@@ -238,7 +371,6 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         
         revenue = farm.temp_sales * market_price
         farm.inventory -= farm.temp_sales
-        
         net_inv_change = farm.temp_prod - farm.temp_sales 
         
         # Expenses
@@ -247,7 +379,8 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         produced_this_turn = farm.sheds * (config.BASE_PROD + prod_bonus) * cap
         
         opex = produced_this_turn * farm.breakeven_price
-        fixed_cost = farm.sheds * config.FIXED_COST_PER_SHED
+        salary_cost = sum(c.get('salary', 0) for c in farm.cards)
+        fixed_cost = (farm.sheds * config.FIXED_COST_PER_SHED) + salary_cost
         interest = farm.debt * farm.get_interest_rate()
         
         has_freezer = any(c.get('storage_save', False) for c in farm.cards)
@@ -255,6 +388,19 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         storage_fees = farm.inventory * store_rate
         
         profit = revenue - opex - fixed_cost - farm.temp_fine - storage_fees - interest
+        
+        # AI EMERGENCY BORROWING
+        if not farm.is_player and (farm.cash + profit) < 0:
+            deficit = -(farm.cash + profit)
+            target_buffer = 500
+            needed = deficit + target_buffer
+            assets = farm.get_asset_value()
+            max_borrow = (assets * config.MAX_LTV) - farm.debt
+            if max_borrow > 0:
+                borrow_amount = min(needed, max_borrow)
+                farm.debt += borrow_amount
+                farm.cash += borrow_amount
+        
         farm.cash += profit
         
         farm.last_turn_log = {
@@ -269,15 +415,29 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
         else: farm.avg_ebitda = (farm.avg_ebitda * 0.7) + (profit * 0.3)
         
         farm.update_valuation()
-        if farm.cash < 0: farm.bankrupt = True
+        
+        # BANKRUPTCY CHECK (With Rescue Logic for Player)
+        if farm.cash < 0:
+            if farm.is_player:
+                # Check Solvency
+                hard_assets = (farm.sheds * config.SHED_COST * 0.8) + (farm.inventory * 0.4)
+                needed = abs(farm.cash)
+                pro_forma_debt = farm.debt + needed
+                if hard_assets > 0 and (pro_forma_debt / hard_assets) <= config.MAX_LTV:
+                    pass # Allow Bailout in UI
+                else:
+                    farm.bankrupt = True
+            else:
+                farm.bankrupt = True
 
-    # Cleanup & Game Over Checks
+    # Cleanup
     for i in range(4):
         if st.session_state.market_cards[i] is None:
             st.session_state.market_cards[i] = random.choice(config.CARDS_DB)
 
     st.session_state.season += 1
     st.session_state.next_event_name = draw_event()
+    update_quant_prediction()
     st.session_state.show_summary = True
     
     tycoon = opponents[2]
@@ -286,8 +446,8 @@ def execute_turn(player_capacity, player_sell_pct, player_build_req):
 
     if opponents[2].bankrupt:
         st.session_state.game_active = False
-        st.session_state.game_over_msg = "🏆 VICTORY! The Tycoon has gone bankrupt. You are the King of the Roost!"
+        st.session_state.game_over_msg = "🏆 VICTORY! The Tycoon has gone bankrupt."
         
     if st.session_state.season > 40:
         st.session_state.game_active = False
-        st.session_state.game_over_msg = "💀 GAME OVER: Time is up. Apex Global acquired The Tycoon."
+        st.session_state.game_over_msg = "💀 GAME OVER: Time is up."

@@ -10,6 +10,9 @@ class Farm:
         self.is_player = is_player
         self.personality = personality 
         
+        # New Flag for Margin Call Default
+        self.credit_damaged = False
+        
         # State
         self.cards = []
         self.bankrupt = False
@@ -28,7 +31,8 @@ class Farm:
     
     def get_asset_value(self):
         # Collateral Value for Banks (Conservative)
-        return self.cash + (self.sheds * config.SHED_COST * 0.8) + (self.inventory * 1.5)
+        # Inventory haircut set to 0.4 (was 1.5 in original code)
+        return self.cash + (self.sheds * config.SHED_COST * 0.8) + (self.inventory * 0.4)
 
     def get_ltv(self):
         assets = self.get_asset_value()
@@ -36,6 +40,11 @@ class Farm:
         return self.debt / assets
 
     def get_interest_rate(self):
+        # 1. Permanent Penalty Check
+        if self.credit_damaged:
+            return config.RATE_JUNK
+            
+        # 2. Standard Matrix
         ltv = self.get_ltv()
         if ltv < config.TIER_1_LTV: return config.RATE_PRIME
         elif ltv < config.TIER_2_LTV: return config.RATE_MEZZ
@@ -43,7 +52,7 @@ class Farm:
 
     def update_valuation(self):
         # 1. Liquidation Value (Net of Debt)
-        asset_val = (self.sheds * config.SHED_COST) + sum(c['cost'] for c in self.cards) + (self.inventory * 2.0)
+        asset_val = (self.sheds * config.SHED_COST) + sum(c['cost'] for c in self.cards) + (self.inventory * 1.0)
         liquidation_value = (self.cash + asset_val) - self.debt
         
         # 2. Earnings Value (4x EBITDA) (Net of Debt)

@@ -28,6 +28,7 @@ CARDS_DB = [
     {"name": "Hatchery", "type": "Infra", "cost": 1000, "prod_bonus": 20, "desc": "+20 Chickens/Shed", "icon": "🏭"},
     {"name": "Solar Grid", "type": "Infra", "cost": 1200, "opex_save": 0.5, "desc": "-$0.50 OpEx/Bird", "icon": "☀️"},
     {"name": "Industrial Freezer", "type": "Infra", "cost": 500, "storage_save": True, "desc": "Halves Storage Costs", "icon": "❄️"},
+    {"name": "The Quant", "type": "Emp", "cost": 1000, "salary": 100, "desc": "Forecasts Markets (Accuracy ↑ with tenure)", "icon": "🔮"},
 ]
 
 # -- EVENT DECK --
