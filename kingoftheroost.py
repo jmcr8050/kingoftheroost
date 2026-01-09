@@ -627,11 +627,14 @@ def main():
 
     left_col, right_col = st.columns([1, 1])
 
-    with left_col:
-        st.subheader("⚙️ Finance & Operations")
+    # --- LEFT COLUMN TABS ---
+    ops_tab, analyst_tab = left_col.tabs(["🎛️ Operations", "📊 Analyst"])
+
+    with ops_tab:
+        st.subheader("⚙️ Decisions")
         
         # FINANCE DEPARTMENT (Instant Updates)
-        with st.expander("🏦 Corporate Finance (Debt Facility)", expanded=True):
+        with st.expander("🏦 Corporate Finance (Debt Facility)", expanded=False):
             ltv = player.get_ltv()
             curr_rate = player.get_interest_rate()
             
@@ -645,12 +648,9 @@ def main():
             if ltv >= MAX_LTV: st.error("⛔ CREDIT LIMIT REACHED")
 
             fc1, fc2 = st.columns(2)
-            # Instant Borrow Button
             if fc1.button("Borrow $1,000"):
                 instant_borrow(1000)
                 st.rerun()
-                
-            # Instant Repay Button
             if fc2.button("Repay $1,000"):
                 instant_repay(1000)
                 st.rerun()
@@ -680,24 +680,6 @@ def main():
         sell_int = st.slider("Sell %", 0, 100, 100)
         sell_pct = sell_int / 100.0
         if sell_int < 100: st.caption(f"❄️ Storing {100-sell_int}%")
-
-        # ANALYST TOOLS
-        with st.expander("📊 Financial Analyst Tools"):
-            st.write("**Marginal Revenue Calculator**")
-            last_p = player.last_turn_log.get('Price', 4.00)
-            st.caption(f"Est. Revenue @ ${last_p:.2f} (Last Season Price)")
-            est_vol = max_capacity * capacity * sell_pct
-            st.write(f"Volume: {est_vol:.0f} | Revenue: **${est_vol * last_p:,.0f}**")
-            
-            st.divider()
-            st.write("**Stress Test (Recession Sim)**")
-            stress_prod = st.slider("Test Production %", 0, 120, 100, key="stress_slider") / 100.0
-            stress_vol = max_capacity * stress_prod
-            stress_rev = stress_vol * 2.00 # $2.00 crash price
-            stress_cost = (stress_vol * player.breakeven_price) + (player.sheds * FIXED_COST_PER_SHED) + (player.debt * curr_rate)
-            net_stress = stress_rev - stress_cost
-            if net_stress < 0: st.error(f"Burn: -${abs(net_stress):,.0f} / turn")
-            else: st.success(f"Survive: +${net_stress:,.0f} / turn")
 
         st.divider()
         st.subheader("🛒 Market")
@@ -735,6 +717,37 @@ def main():
             execute_turn(capacity, sell_pct, build_btn)
             st.rerun()
 
+    with analyst_tab:
+        st.subheader("📊 Financial Analyst Tools")
+        st.caption("Use these tools to model scenarios before you commit capital.")
+        
+        with st.container(border=True):
+            st.write("**Marginal Revenue Calculator**")
+            last_p = player.last_turn_log.get('Price', 4.00)
+            st.caption(f"Est. Revenue @ ${last_p:.2f} (Last Season Price)")
+            est_vol = max_capacity * capacity * sell_pct
+            st.metric("Est. Revenue", f"${est_vol * last_p:,.0f}", help="Volume x Last Price")
+            
+        with st.container(border=True):
+            st.write("**Stress Test (Recession Sim)**")
+            st.caption("Simulate cash flow at $2.00/bird price.")
+            
+            # Using a unique key for this slider so it doesn't conflict
+            stress_prod = st.slider("Test Production %", 0, 120, 100, key="stress_slider") / 100.0
+            
+            stress_vol = max_capacity * stress_prod
+            stress_rev = stress_vol * 2.00 # $2.00 crash price
+            stress_cost = (stress_vol * player.breakeven_price) + (player.sheds * FIXED_COST_PER_SHED) + (player.debt * curr_rate)
+            net_stress = stress_rev - stress_cost
+            
+            st.write(f"**Scenario:** Price Drops to $2.00")
+            if net_stress < 0: 
+                st.error(f"🔥 **Burn Rate:** -${abs(net_stress):,.0f} / turn")
+                st.caption("You will lose money.")
+            else: 
+                st.success(f"✅ **Survival:** +${net_stress:,.0f} / turn")
+                st.caption("You remain profitable.")
+
     with right_col:
         st.subheader("📡 Market Intel")
         
@@ -769,9 +782,8 @@ def main():
                     c_head, c_btn = st.columns([2, 1])
                     c_head.markdown(f"**{ai.name}**")
                     
-                    # Valuation Logic
                     multiplier = 1.1
-                    if ai.cash < 500: multiplier = 0.8 # Distressed Discount
+                    if ai.cash < 500: multiplier = 0.8 
                     buyout_cost = ai.valuation * multiplier
                     
                     if c_btn.button(f"Buy (${buyout_cost:,.0f})", key=f"acq_{i}", disabled=player.cash < buyout_cost):
@@ -779,7 +791,6 @@ def main():
                     
                     if ai.cash < 500: st.caption(":red[⚠️ DISTRESSED ASSET (20% OFF)]")
 
-                    # Synergy Logic
                     their_margin = 4.00 - ai.breakeven_price
                     your_margin = 4.00 - player.breakeven_price
                     delta = (your_margin - their_margin) * 80 
