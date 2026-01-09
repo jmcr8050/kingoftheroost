@@ -175,12 +175,13 @@ def render_dashboard():
     prod_bonus = sum(c.get('prod_bonus', 0) for c in player.cards)
     max_capacity = player.sheds * (config.BASE_PROD + prod_bonus)
     
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Season", f"{st.session_state.season}/40")
     m2.metric("Cash", f"${player.cash:,.0f}")
     m3.metric("Debt", f"${player.debt:,.0f}")
     m4.metric("Sheds", f"{player.sheds}")
-    m5.metric("Max Capacity", f"{max_capacity:,.0f}")
+    m5.metric("Max Capacity", f"{max_capacity:,.0f}", help="Chicken production at 100% utilization")
+    m6.metric("Inventory", f"{int(player.inventory):,}") # New Metric
     
     # --- RESTORED MISSION BRIEF ---
     with st.expander("📖 Mission Brief & Rules of Engagement", expanded=False):
@@ -299,14 +300,45 @@ def render_dashboard():
         st.subheader("📊 Financial Models")
         
         with st.container(border=True):
-            st.markdown("**1. Marginal Revenue (Overclocking)**")
+            st.markdown("**1. Overclocking Risk Model (EV)**")
+            st.caption("Should you push production beyond 100%?")
+            
             an_cap = st.slider("Simulated Intensity", 0, 120, 100, key="an_cap") / 100.0
             last_p = player.last_turn_log.get('Price', 4.00)
+            
+            # Base Calcs
             est_vol = max_capacity * an_cap
             est_rev = est_vol * last_p
+            
+            # EV Calcs
+            base_fine = config.REGULATORY_FINE
+            if profile == "insider": base_fine = 1200 # Insider Penalty
+            
+            fine_prob = 0.0
+            if an_cap > 1.0:
+                fine_prob = (an_cap - 1.0) * config.FINE_CHANCE_SCALER
+            
+            expected_fine = base_fine * fine_prob
+            net_ev = est_rev - expected_fine
+            
+            # Display
             c1, c2 = st.columns(2)
             c1.metric("Est. Volume", f"{int(est_vol)}")
-            c2.metric("Est. Revenue", f"${est_rev:,.0f}")
+            c2.metric("Est. Revenue", f"${est_rev:,.0f}", help="Assumes Price = Last Season's Price")
+            
+            if an_cap > 1.0:
+                st.divider()
+                st.markdown("#### 🎲 Expected Value Analysis")
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Fine Risk", f"{int(fine_prob*100)}%")
+                e2.metric("Expected Fine", f"-${expected_fine:.0f}")
+                
+                # EV Color Coding
+                ev_color = "green" if (est_rev - expected_fine) > (max_capacity * last_p) else "orange"
+                e3.markdown(f"**Net EV:** :{ev_color}[${net_ev:,.0f}]")
+                
+                if profile == "insider":
+                    st.caption("⚠️ **Insider Penalty Active:** Fines are doubled.")
             
         with st.container(border=True):
             st.markdown("**2. Liquidity Stress Test**")
