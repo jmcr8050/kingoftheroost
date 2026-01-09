@@ -566,6 +566,63 @@ def render_analyst_dashboard():
         else:
             st.success("✅ **PASS:** You have enough liquidity to survive.")
 
+# --- END GAME REPORT ---
+def draw_end_game_report():
+    st.divider()
+    
+    # 1. Determine Outcome
+    msg = st.session_state.game_over_msg
+    is_win = "VICTORY" in msg
+    
+    if is_win:
+        st.success(f"# 🏆 MISSION ACCOMPLISHED")
+        st.markdown(f"### {msg}")
+        st.balloons()
+    else:
+        st.error(f"# 💀 TERMINATED")
+        st.markdown(f"### {msg}")
+
+    # 2. Calculate Metrics
+    player = st.session_state.player
+    years_played = st.session_state.season / 4.0
+    
+    # Start Value: $2.5k Cash + 3 Sheds ($3k) = $5,500
+    start_val = 5500 
+    end_val = player.valuation
+    
+    # CAGR Formula: (End/Start)^(1/Years) - 1
+    if end_val <= 0: cagr = -1.0 # Total loss
+    else: cagr = (end_val / start_val) ** (1 / max(years_played, 0.25)) - 1
+    
+    # Grade Logic
+    if not is_win: grade = "F"
+    elif cagr > 0.25: grade = "A+"
+    elif cagr > 0.15: grade = "A"
+    elif cagr > 0.10: grade = "B"
+    elif cagr > 0.05: grade = "C"
+    else: grade = "D"
+
+    # 3. The Report Card
+    st.markdown("### 📋 The Board's Review")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Final Valuation", f"${end_val:,.0f}")
+    col2.metric("Tenure", f"{years_played:.1f} Years")
+    col3.metric("CAGR (Return)", f"{cagr:.1%}")
+    col4.metric("CEO Grade", grade)
+    
+    # 4. Final Chart
+    if len(st.session_state.history) > 0:
+        st.markdown("### 📈 Shareholder Value History")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['PlayerCash'], name='Your Cash', line=dict(color='green', width=3)))
+        fig.add_trace(go.Scatter(x=st.session_state.history['Season'], y=st.session_state.history['TycoonCash'], name='Tycoon Cash', line=dict(color='red', width=2)))
+        st.plotly_chart(fig, use_container_width=True)
+    
+    st.divider()
+    if st.button("🔄 Start New Career", type="primary"):
+        init_game()
+        st.rerun()
 
 # --- UI RENDERER ---
 def main():
@@ -573,6 +630,12 @@ def main():
         st.title("King of the Roost")
         st.caption("Supply, Demand, and Hostile Takeovers")
         
+        # CHECK: Did we just finish a game?
+        if st.session_state.game_over_msg:
+            draw_end_game_report()
+            return # Stop here to show only the report
+
+        # --- STANDARD LANDING PAGE ---
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("The Situation")
@@ -620,14 +683,6 @@ def main():
             * If you spend **LESS** money than the Tycoon in a turn (saving cash), you gain **Insider Intel**.
             * This reveals the next season's Demand Forecast *before* you act.
             """)
-            
-            # GAME OVER MESSAGE DISPLAY
-            if st.session_state.game_over_msg:
-                if "VICTORY" in st.session_state.game_over_msg:
-                    st.success(f"## {st.session_state.game_over_msg}")
-                    st.balloons()
-                else:
-                    st.error(f"## {st.session_state.game_over_msg}")
         return
 
     # --- POPUP BLOCKER ---
