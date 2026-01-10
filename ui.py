@@ -57,9 +57,21 @@ def show_season_summary_dialog():
     
     st.subheader(f"Season {st.session_state.season - 1} Performance")
     
-    evt_label = f"**MARKET EVENT:** {log['Event_Name']} ({log['Event_Desc']})"
-    if log['Event_Bad']: st.error(evt_label)
-    else: st.success(evt_label)
+    # --- UPDATED HEADER SECTION ---
+    # We display the Event and the resulting Market Price side-by-side
+    
+    col_evt, col_price = st.columns([3, 1])
+    
+    with col_evt:
+        evt_label = f"**MARKET EVENT:** {log['Event_Name']} ({log['Event_Desc']})"
+        if log['Event_Bad']: st.error(evt_label)
+        else: st.success(evt_label)
+        
+    with col_price:
+        # Display the Clearing Price big and bold
+        st.metric("Clearing Price", f"${log['Price']:.2f}", help="Final price per bird based on supply/demand")
+
+    st.divider()
 
     # 1. VOLUME STATS
     st.caption("📦 OPERATIONS (VOLUME)")
@@ -76,7 +88,8 @@ def show_season_summary_dialog():
     st.markdown("### 📉 Income Statement")
     
     c1, c2 = st.columns([3, 1])
-    c1.write("➕ **Revenue** (Sales x Price)")
+    # Added reference to Price here as well for clarity
+    c1.write(f"➕ **Revenue** ({int(log['Sales']):,} birds x ${log['Price']:.2f})")
     c2.write(f"**${log['Rev']:,.0f}**")
     
     c1, c2 = st.columns([3, 1])
